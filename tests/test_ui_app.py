@@ -305,3 +305,22 @@ def test_card_viewer_felt_survives_theme_switch(app):
     app.set_theme()
     assert app.viewers.get("final").canvas.cget("background") == FELT_COLOR
 
+
+def test_export_writes_file_and_confirms(app, tmp_path, monkeypatch):
+    from shuffle_solver.ui import app as app_module
+    shown = []
+    monkeypatch.setattr(app_module.messagebox, "showinfo", lambda *a, **k: shown.append(a))
+    monkeypatch.setattr(app_module.messagebox, "showerror", lambda *a, **k: shown.append(a))
+    path = tmp_path / "start.txt"
+    monkeypatch.setattr(app_module.filedialog, "asksaveasfilename", lambda **k: str(path))
+    app.load_preset()
+    app.model.add_step(solver.Step(ops.OUT_FARO), 0)
+    app.export_start()
+    assert "Shuffle sequence: Out-Faro" in path.read_text(encoding="utf-8")
+    assert shown == [("Export", f"Saved to {path}")]
+
+    shown.clear()
+    bad = tmp_path / "no-such-dir" / "start.txt"
+    monkeypatch.setattr(app_module.filedialog, "asksaveasfilename", lambda **k: str(bad))
+    app.export_start()
+    assert shown[0][0] == "Export" and "Could not save" in shown[0][1]

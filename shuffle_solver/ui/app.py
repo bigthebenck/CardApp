@@ -487,25 +487,40 @@ class ShuffleSolverApp:
     def export_start(self):
         res = self.model.result
         if not (res.has_answer and res.verified):
-            messagebox.showinfo("Export", "There is no verified starting order to export yet.")
+            messagebox.showinfo("Export", "There is no verified starting order to export yet.",
+                                parent=self.root)
             return
-        path = filedialog.asksaveasfilename(defaultextension=".txt",
+        path = filedialog.asksaveasfilename(parent=self.root, defaultextension=".txt",
                                             filetypes=[("Text", "*.txt"), ("All files", "*")])
         if not path:
             return
         steps = ", ".join(s.label() for s in self.model.steps) or "(none)"
-        with open(path, "w", encoding="utf-8") as fh:
-            fh.write(f"Shuffle sequence: {steps}\n\nStarting order (top first):\n")
-            fh.write(self._start_numbered() + "\n\nShorthand:\n" + self._start_shorthand() + "\n")
+        text = (f"Shuffle sequence: {steps}\n\nStarting order (top first):\n"
+                + self._start_numbered() + "\n\nShorthand:\n" + self._start_shorthand() + "\n")
+
+        def write():
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(text)
+        self._write_file("Export", path, write)
 
     def save_setup(self):
-        path = filedialog.asksaveasfilename(defaultextension=".json",
+        path = filedialog.asksaveasfilename(parent=self.root, defaultextension=".json",
                                             filetypes=[("Shuffle setup", "*.json")])
         if path:
-            self.model.save(path)
+            self._write_file("Save setup", path, lambda: self.model.save(path))
+
+    def _write_file(self, title, path, write):
+        """Run ``write`` and tell the user where the file went, or why it failed."""
+        try:
+            write()
+        except OSError as exc:
+            messagebox.showerror(title, f"Could not save {path}:\n{exc}", parent=self.root)
+        else:
+            messagebox.showinfo(title, f"Saved to {path}", parent=self.root)
 
     def open_setup(self):
-        path = filedialog.askopenfilename(filetypes=[("Shuffle setup", "*.json"),
+        path = filedialog.askopenfilename(parent=self.root,
+                                          filetypes=[("Shuffle setup", "*.json"),
                                                      ("All files", "*")])
         if not path:
             return
