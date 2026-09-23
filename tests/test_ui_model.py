@@ -3,7 +3,7 @@ import pytest
 from shuffle_solver import deck
 from shuffle_solver import shuffle_ops as ops
 from shuffle_solver.solver import Step, simulate
-from shuffle_solver.ui.model import AppModel, format_preview
+from shuffle_solver.ui.model import AppModel, XToYModel, format_instructions, format_preview
 
 NDO = deck.PRESETS["New deck order"]
 
@@ -182,3 +182,40 @@ def test_format_preview(model):
 def test_format_preview_without_steps(model):
     lines = format_preview(model.result.states, []).splitlines()
     assert lines[0].split() == ["Pos", "Start"] and len(lines) == 53
+
+
+# --- X to Y -------------------------------------------------------------------------------
+
+
+def test_x_to_y_waits_for_full_decks():
+    m = XToYModel()
+    assert m.outcome.status == "waiting"
+    m.load_preset("start", "New deck order")
+    assert any("Ending order" in msg for msg in m.solve().messages)
+    assert not m.outcome.has_answer
+
+
+def test_x_to_y_solves_and_edits_clear_the_answer():
+    m = XToYModel()
+    m.load_preset("start", "New deck order")
+    m.set_cards("end", simulate(NDO, [Step(ops.OUT_FARO), Step(ops.CUT, 10)]))
+    out = m.solve()
+    assert out.status == "ok" and out.verified and out.shortest
+    assert len(out.steps) == 2
+    assert out.states[0] == NDO and len(out.states) == 3
+    assert "the fewest possible" in out.messages[0]
+    m.load_preset("end", "Aronson stack")
+    assert m.outcome.status == "waiting" and not m.outcome.has_answer
+
+
+def test_x_to_y_shorthand_error_and_swap():
+    m = XToYModel()
+    assert m.set_from_text("start", "A-KC, ZZ") is not None
+    m.load_preset("end", "New deck order")
+    m.swap()
+    assert m.errors["end"] and m.cards["start"] == NDO
+    assert any("Ending order shorthand error" in p for p in m.problems())
+
+
+def test_format_instructions():
+    assert format_instructions([Step(ops.IN_FARO), Step(ops.CUT, 3)]) == " 1. In-Faro\n 2. Cut 3"

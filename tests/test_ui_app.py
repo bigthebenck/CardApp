@@ -4,7 +4,7 @@ import pytest
 
 tk = pytest.importorskip("tkinter")
 
-from shuffle_solver import deck  # noqa: E402
+from shuffle_solver import deck, solver  # noqa: E402
 from shuffle_solver import shuffle_ops as ops  # noqa: E402
 from shuffle_solver.ui.app import ShuffleSolverApp  # noqa: E402
 
@@ -113,3 +113,31 @@ def test_copy_shorthand_parses_back(app):
     app._add_step(ops.OUT_FARO)
     text = app._start_shorthand()
     assert deck.parse_cards(text) == app.model.result.start
+
+
+def test_tabs_present(app):
+    tabs = [app.notebook.tab(t, "text") for t in app.notebook.tabs()]
+    assert tabs == ["Starting Order", "X to Y"]
+
+
+def test_x_to_y_tab_finds_shuffles(app):
+    tab = app.x_to_y
+    tab.load_preset("start")
+    tab.texts["end"].delete("1.0", "end")
+    tab.texts["end"].insert("1.0", deck.format_cards(
+        solver.simulate(deck.PRESETS["New deck order"], [solver.Step(ops.IN_FARO)])))
+    tab.solve()  # parses the pending text first
+    assert tab.badge.cget("text") == "PASS"
+    assert tab.steps_text.get("1.0", "end").strip() == "1. In-Faro"
+    assert "1. In-Faro" in tab._instructions()
+
+
+def test_x_to_y_swap_keeps_typed_text(app):
+    tab = app.x_to_y
+    tab.texts["start"].insert("1.0", "A-KCHSD")
+    tab.apply_text("start")
+    tab.load_preset("end")
+    tab.swap()
+    assert tab.texts["end"].get("1.0", "end").strip() == "A-KCHSD"
+    assert tab.model.cards["end"] == deck.parse_cards("A-KCHSD")
+    assert tab.badge.cget("text") == "WAITING"

@@ -12,6 +12,11 @@ Supported shuffles (in any mix and order):
 | In-faro | i < 26 → 2i+1; i ≥ 26 → 2(i−26) | — |
 | Overhand run of X singles | i ≥ X → i−X; i < X → N−1−i | 1–52 (52 reverses the deck) |
 | Cut X | i ≥ X → i−X; i < X → i+(N−X) | 1–51 |
+| Partial out-faro of top X | i < X → 2i; X ≤ i < 2X → 2(i−X)+1; else i | 2–26 |
+| Partial in-faro of top X | i < X → 2i+1; X ≤ i < 2X → 2(i−X); else i | 1–26 |
+
+A partial faro cuts off the top X cards and weaves them into the top of the
+rest; the out version keeps the packet's top card on top. X = 26 is a full faro.
 
 The solver walks each starting position m forward through the sequence to find
 its final position Π(m), then sets `start[m] = final[Π(m)]`. Every result is
@@ -45,6 +50,27 @@ pyinstaller --onefile --windowed --name ShuffleSolver run_app.py
 
 File → Save/Open setup stores the final deck and sequence as JSON.
 
+### X to Y tab
+
+Enter a starting order (X) and an ending order (Y) as presets or shorthand,
+then press **Find shuffles** to get numbered instructions that turn X into Y.
+
+- A search tries every full and partial faro, overhand run and cut. If some
+  sequence of 5 or fewer shuffles works, the app gives a shortest one. It also
+  finds longer faro-heavy routes: several full faros plus a few other
+  shuffles at either end (e.g. the Mnemonica prep preset → Mnemonica: 4
+  out-faros, run 26, partial out-faro of top 18, cut 9).
+- It also tries each preset as a midpoint, X → preset → Y. New deck order →
+  Mnemonica goes through the Mnemonica prep preset in 11 shuffles.
+- Otherwise it builds a long route (usually 60–75 steps) out of cuts and
+  overhand runs, which can reach any order. Most pairs of orders have no short
+  route: with ~150 possible shuffles per step, reaching an arbitrary one of
+  the 52! orders takes at least ~31 shuffles. Read the deck as a circle: a cut
+  just turns the circle, and "cut s, then overhand run L" reverses any arc
+  of it, so arc reversals can sort the deck.
+
+Every answer is replayed forward and checked against Y (the PASS badge).
+
 ## Card shorthand
 
 Cards are RANK+SUIT: ranks `A 2-9 T J Q K` (`10` also works), suits `C H S D`.
@@ -71,9 +97,11 @@ Face-up is a display flag only; it never affects the shuffle math.
 shuffle_solver/
   shuffle_ops.py   pure position functions for each shuffle
   solver.py        composition, solve, forward simulation, round-trip verify
+  path_finder.py   X to Y: shuffles from one order to another
   deck.py          Card, shorthand parser/formatter, validation, presets
   ui/model.py      toolkit-free app state (tested without a display)
-  ui/app.py        Tkinter window
+  ui/app.py        Tkinter window and tabs
+  ui/x_to_y.py     the X to Y tab
 tests/             pytest + hypothesis
 ```
 

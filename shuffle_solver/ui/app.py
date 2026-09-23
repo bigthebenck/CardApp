@@ -1,7 +1,9 @@
-"""Tkinter window: Final Deck, Shuffle Sequence and Result panels.
+"""Tkinter window with two tabs.
 
-All state lives in ``AppModel``; this module only draws it and forwards
-user edits. It contains no shuffle math.
+The first tab holds the Final Deck, Shuffle Sequence and Result panels; the
+second ("X to Y") finds shuffles from one order to another. All state lives in
+``AppModel`` and ``XToYModel``; this module only draws it and forwards user
+edits. It contains no shuffle math.
 """
 
 import tkinter as tk
@@ -10,12 +12,16 @@ from tkinter import filedialog, messagebox, ttk
 from .. import deck, solver
 from .. import shuffle_ops as ops
 from .model import DECK_SIZE, AppModel, format_preview
+from .x_to_y import XToYTab
 
 TEXT_DEBOUNCE_MS = 400
 GRID_ROWS = 13
 MONO = ("Courier", 10)
 
 ALL_CARD_LABELS = [deck.Card(r, s).pretty() for s in deck.SUITS for r in deck.RANKS]
+
+SOLVER_TAB_TITLE = "Starting Order"
+X_TO_Y_TAB_TITLE = "X to Y"
 
 BADGES = {
     "ok": ("PASS", "#1e7b34"),
@@ -27,7 +33,7 @@ BADGES = {
 
 
 class ShuffleSolverApp:
-    def __init__(self, root, model=None):
+    def __init__(self, root, model=None, x_to_y_model=None):
         self.root = root
         self.model = model or AppModel()
         self._text_job = None
@@ -40,11 +46,15 @@ class ShuffleSolverApp:
         self._init_styles()
         self._build_menu()
 
-        panes = ttk.PanedWindow(root, orient=tk.HORIZONTAL)
-        panes.pack(fill=tk.BOTH, expand=True, padx=6, pady=6)
+        self.notebook = ttk.Notebook(root)
+        self.notebook.pack(fill=tk.BOTH, expand=True, padx=6, pady=6)
+        panes = ttk.PanedWindow(self.notebook, orient=tk.HORIZONTAL)
+        self.notebook.add(panes, text=SOLVER_TAB_TITLE)
         panes.add(self._build_final_panel(panes), weight=2)
         panes.add(self._build_sequence_panel(panes), weight=1)
         panes.add(self._build_result_panel(panes), weight=2)
+        self.x_to_y = XToYTab(self.notebook, x_to_y_model)
+        self.notebook.add(self.x_to_y.frame, text=X_TO_Y_TAB_TITLE)
 
         self.model.subscribe(lambda _m: self.refresh())
         self.refresh()
@@ -130,10 +140,16 @@ class ShuffleSolverApp:
                                                                           sticky=tk.EW)
         ttk.Button(add, text="+ Cut",
                    command=lambda: self._add_step(ops.CUT)).grid(row=1, column=1, sticky=tk.EW)
-        ttk.Label(add, text="X:").grid(row=1, column=2, padx=(8, 2))
+        ttk.Button(add, text="+ Partial Out-Faro",
+                   command=lambda: self._add_step(ops.PARTIAL_OUT_FARO)).grid(row=2, column=0,
+                                                                              sticky=tk.EW)
+        ttk.Button(add, text="+ Partial In-Faro",
+                   command=lambda: self._add_step(ops.PARTIAL_IN_FARO)).grid(row=2, column=1,
+                                                                             sticky=tk.EW)
+        ttk.Label(add, text="X:").grid(row=1, column=2, rowspan=2, padx=(8, 2))
         self.new_x_var = tk.StringVar(value="5")
         ttk.Spinbox(add, from_=1, to=DECK_SIZE, width=4,
-                    textvariable=self.new_x_var).grid(row=1, column=3)
+                    textvariable=self.new_x_var).grid(row=1, column=3, rowspan=2)
         add.columnconfigure(0, weight=1)
         add.columnconfigure(1, weight=1)
 
@@ -169,8 +185,10 @@ class ShuffleSolverApp:
         self.seq_error = ttk.Label(frame, text="", style="Error.TLabel", wraplength=320)
         self.seq_error.pack(anchor=tk.W, pady=(4, 0))
         ttk.Label(frame, text="Overhand run: X = 1–52 (52 reverses the deck). "
-                              "Cut: X = 1–51.", foreground="#555",
-                  wraplength=220).pack(anchor=tk.W)
+                              "Cut: X = 1–51. Partial faro: cut off the top X (up to 26) "
+                              "and weave them into the top of the rest; out keeps the "
+                              "top card on top, in makes it second.", foreground="#555",
+                  wraplength=260).pack(anchor=tk.W)
         return frame
 
     def _build_result_panel(self, parent):

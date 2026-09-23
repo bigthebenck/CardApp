@@ -9,7 +9,7 @@ here and no Tk, so it is unit-tested directly.
 import json
 from dataclasses import dataclass, field
 
-from .. import deck, solver
+from .. import deck, path_finder, solver
 from .. import shuffle_ops as ops
 
 DECK_SIZE = ops.DECK_SIZE
@@ -170,7 +170,8 @@ class AppModel:
             return Result("empty_sequence", ["No shuffles yet: the starting order is simply "
                                              "the final order."], res.start, res.states, True)
         n = len(self.steps)
-        return Result("ok", [f"Verified: {n} shuffle{'s' if n != 1 else ''} reproduce the "
+        verb = "reproduces" if n == 1 else "reproduce"
+        return Result("ok", [f"Verified: {n} shuffle{'s' if n != 1 else ''} {verb} the "
                              "final deck."], res.start, res.states, True)
 
     # --- persistence -------------------------------------------------------------------
@@ -221,3 +222,117 @@ def format_preview(states, steps):
         row = "".join(states[k][pos].pretty().ljust(width) for k in range(len(states)))
         lines.append(f"{pos + 1:>3}  " + row)
     return "\n".join(line.rstrip() for line in lines)
+
+
+# --- X to Y ------------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class PathOutcome:
+    status: str  # "waiting", "ok", "failed"
+    messages: list = field(default_factory=list)
+    steps: list | None = None
+    states: list | None = None  # start, after each step, ..., end
+    verified: bool = False
+    shortest: bool = False
+
+    @property
+    def has_answer(self):
+        return self.steps is not None
+
+
+class XToYModel:
+    """Two deck orders and the shuffles found to get from the first to the second.
+
+    Finding a path can take a couple of seconds, so it only runs on ``solve()``;
+    any edit to either order clears the old answer.
+    """
+
+    SIDES = ("start", "end")
+
+    def __init__(self):
+        self.cards = {"start": [], "end": []}
+        self.errors = {"start": None, "end": None}  # shorthand parse errors
+        self.outcome = None
+        self._listeners = []
+        self._invalidate()
+
+    def subscribe(self, callback):
+        self._listeners.append(callback)
+
+    def _changed(self):
+        for cb in list(self._listeners):
+            cb(self)
+
+    def _invalidate(self):
+        self.outcome = PathOutcome("waiting", self.problems() or ["Press Find shuffles."])
+
+    def set_cards(self, side, cards):
+        if list(cards) != self.cards[side] or self.errors[side]:
+            self.cards[side] = list(cards)
+            self.errors[side] = None
+            self._invalidate()
+            self._changed()
+
+    def set_from_text(self, side, text):
+        """Parse shorthand for one side; returns the error message or None."""
+        try:
+            self.set_cards(side, deck.parse_cards(text))
+        except ValueError as exc:
+            if self.errors[side] != str(exc):
+                self.errors[side] = str(exc)
+                self._invalidate()
+                self._changed()
+            return self.errors[side]
+        return None
+
+    def load_preset(self, side, name):
+        self.set_cards(side, deck.PRESETS[name])
+
+    def swap(self):
+        self.cards["start"], self.cards["end"] = self.cards["end"], self.cards["start"]
+        self.errors["start"], self.errors["end"] = self.errors["end"], self.errors["start"]
+        self._invalidate()
+        self._changed()
+
+    def report(self, side):
+        return deck.validate_deck(self.cards[side])
+
+    def problems(self):
+        """Why the orders can't be solved yet (empty list when they can)."""
+        out = []
+        for side, title in (("start", "Starting order"), ("end", "Ending order")):
+            if self.errors[side]:
+                out.append(f"{title} shorthand error: {self.errors[side]}")
+            elif not self.report(side).ok:
+                out.append(f"{title}: " + " ".join(self.report(side).messages()))
+        return out
+
+    def solve(self):
+        problems = self.problems()
+        if problems:
+            self.outcome = PathOutcome("waiting", problems)
+        else:
+            start, end = self.cards["start"], self.cards["end"]
+            found = path_finder.find_path(start, end, deck.PRESETS.values())
+            states = solver.intermediate_states(start, found.steps)
+            verified = [c.key for c in states[-1]] == [c.key for c in end]
+            n = len(found.steps)
+            if not verified:
+                msg = "Check failed: these shuffles do not produce the ending order."
+            elif n == 0:
+                msg = "The two orders are already the same; no shuffles needed."
+            elif found.shortest:
+                msg = f"Verified. {n} shuffle{'s' if n != 1 else ''}, the fewest possible."
+            else:
+                msg = (f"Verified. {n} shuffles. No sequence of {path_finder.SHORTEST_DEPTH} "
+                       "or fewer exists; this is the shortest route found, not necessarily "
+                       "the shortest possible.")
+            self.outcome = PathOutcome("ok" if verified else "failed", [msg], found.steps,
+                                       states, verified, found.shortest)
+        self._changed()
+        return self.outcome
+
+
+def format_instructions(steps):
+    return "\n".join(f"{k:>2}. {s.label()}" for k, s in enumerate(steps, 1))
