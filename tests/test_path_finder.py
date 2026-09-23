@@ -144,3 +144,25 @@ def test_progress_reported_and_cancel_raises():
         path_finder.find_path(NDO, end, depth=6, cancel=lambda: len(calls) >= 3,
                               progress=lambda f, text: calls.append((f, text)))
     assert calls[0] == (None, "Building search tables…")
+
+
+def test_improved_reports_ever_shorter_routes_while_searching():
+    rng = random.Random(11)
+    seq = [rng.choice(path_finder.all_steps()) for _ in range(5)]
+    end = simulate(NDO, seq)
+    seen = []
+    result = path_finder.find_path(NDO, end, deck.PRESETS.values(), depth=5,
+                                   improved=seen.append)
+    lengths = [len(steps) for steps in seen]
+    assert len(seen) >= 2  # the fallback first, then the 5-shuffle route
+    assert lengths == sorted(set(lengths), reverse=True)
+    for steps in seen:
+        assert keys(simulate(NDO, steps)) == keys(end)
+    assert result.shortest and len(result.steps) == lengths[-1] == 5
+
+
+def test_improved_not_called_without_slow_layers():
+    seen = []
+    end = simulate(NDO, [OUT, Step(ops.CUT, 10)])
+    path_finder.find_path(NDO, end, depth=4, improved=seen.append)
+    assert seen == []

@@ -3,7 +3,8 @@ import pytest
 from shuffle_solver import deck
 from shuffle_solver import shuffle_ops as ops
 from shuffle_solver.solver import Step, simulate
-from shuffle_solver.ui.model import AppModel, XToYModel, format_instructions, format_preview
+from shuffle_solver.ui.model import (AppModel, PathOutcome, XToYModel, cancelled_outcome,
+                                     format_instructions, format_preview, search_outcome)
 
 NDO = deck.PRESETS["New deck order"]
 
@@ -234,3 +235,21 @@ def test_x_to_y_shorthand_error_and_swap():
 
 def test_format_instructions():
     assert format_instructions([Step(ops.IN_FARO), Step(ops.CUT, 3)]) == " 1. In-Faro\n 2. Cut 3"
+
+
+def test_search_outcome_reports_best_so_far():
+    ndo = deck.PRESETS["New deck order"]
+    end = __import__("random").Random(2).sample(ndo, len(ndo))
+    seen = []
+    final = search_outcome(ndo, end, 5, improved=seen.append)
+    assert seen and all(o.status == "searching" and o.verified and o.states for o in seen)
+    assert "Best so far" in seen[0].messages[0]
+    assert len(final.steps) <= len(seen[-1].steps)
+
+
+def test_cancelled_outcome_keeps_best_route():
+    assert cancelled_outcome(None).status == "waiting"
+    best = PathOutcome("searching", ["x"], [Step(ops.OUT_FARO)], [[], []], True)
+    out = cancelled_outcome(best)
+    assert out.status == "ok" and out.verified and out.steps == best.steps
+    assert "Search cancelled" in out.messages[0] and "1 shuffle " in out.messages[0]

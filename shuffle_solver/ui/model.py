@@ -229,7 +229,7 @@ def format_preview(states, steps):
 
 @dataclass(frozen=True)
 class PathOutcome:
-    status: str  # "waiting", "ok", "failed"
+    status: str  # "waiting", "ok", "failed", or "searching" (best route so far)
     messages: list = field(default_factory=list)
     steps: list | None = None
     states: list | None = None  # start, after each step, ..., end
@@ -333,13 +333,41 @@ class XToYModel:
         self.depth = depth
 
 
-def search_outcome(start, end, depth, cancel=None, progress=None):
+def _shuffles(n):
+    return f"{n} shuffle{'s' if n != 1 else ''}"
+
+
+def best_so_far(start, end, steps):
+    """A "searching" outcome for a route found while a search is still running."""
+    states = solver.intermediate_states(start, steps)
+    verified = [c.key for c in states[-1]] == [c.key for c in end]
+    msg = (f"Best so far: {_shuffles(len(steps))} (verified). Still looking for a "
+           "shorter route; you can use this one or cancel and keep it.")
+    if not verified:
+        msg = "Check failed: these shuffles do not produce the ending order."
+    return PathOutcome("searching", [msg], steps, states, verified)
+
+
+def cancelled_outcome(best):
+    """What to show when a search is cancelled, keeping its best route if it had one."""
+    if best is None or not best.verified:
+        return PathOutcome("waiting", ["Search cancelled."])
+    return PathOutcome("ok", [f"Search cancelled. Best route found: {_shuffles(len(best.steps))}"
+                              " (verified); a shorter one may exist."],
+                       best.steps, best.states, True)
+
+
+def search_outcome(start, end, depth, cancel=None, progress=None, improved=None):
     """Search from ``start`` to ``end`` (two full decks) and describe the result.
 
     Touches no model state, so it can run on a worker thread with copies of
     the cards. Raises path_finder.SearchCancelled when ``cancel()`` returns True.
+    ``improved(outcome)`` gets a ``best_so_far`` outcome each time the search
+    finds a shorter route before it is done.
     """
-    found = path_finder.find_path(start, end, deck.PRESETS.values(), depth, cancel, progress)
+    on_route = None if improved is None else (lambda s: improved(best_so_far(start, end, s)))
+    found = path_finder.find_path(start, end, deck.PRESETS.values(), depth, cancel, progress,
+                                  on_route)
     states = solver.intermediate_states(start, found.steps)
     verified = [c.key for c in states[-1]] == [c.key for c in end]
     n = len(found.steps)

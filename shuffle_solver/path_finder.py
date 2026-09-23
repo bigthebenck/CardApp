@@ -82,15 +82,19 @@ def target_positions(start, target):
     return [where[k] for k in keys]
 
 
-def find_path(start, target, stones=(), depth=SHORTEST_DEPTH, cancel=None, progress=None):
+def find_path(start, target, stones=(), depth=SHORTEST_DEPTH, cancel=None, progress=None,
+              improved=None):
     """A list of Steps that turns ``start`` into ``target`` (same cards, any order).
 
     ``stones`` are other orders of the same cards that routes may pass through.
     Every route of up to ``depth`` shuffles is searched, so a result that short
     is a shortest one. ``cancel()`` is polled, and SearchCancelled is raised
     once it returns True. ``progress(fraction, text)`` is called now and then,
-    with fraction None while the amount of work is unknown. Both are called on
-    the thread running the search.
+    with fraction None while the amount of work is unknown. ``improved(steps)``
+    is called with each route shorter than any before it while the slow
+    exhaustive layers run, starting with the fallback route, so a caller can
+    show the best answer so far. All three are called on the thread running
+    the search.
     """
     if not 1 <= depth <= MAX_DEPTH:
         raise ValueError(f"search depth must be between 1 and {MAX_DEPTH}, got {depth}")
@@ -109,30 +113,47 @@ def find_path(start, target, stones=(), depth=SHORTEST_DEPTH, cancel=None, progr
     bwd = _side(goal, moves, faro_moves, False, near_b, report)
     found = _meet(fwd, bwd)
     covered = near_f + near_b  # every route this short has been checked
-    for extra in range(1, depth - covered + 1):
+    best = _Best(improved)
+
+    def fallback():
+        """The best route that is not from the exhaustive search (stones, constructive)."""
+        candidates = []
+        for k, stone in enumerate(stones):
+            report(k / len(stones), "Trying known stacks as a midpoint…", force=True)
+            w = _state(target_positions(stone, target))
+            if w in (origin, goal):
+                continue
+            first = _meet(fwd, _side(w, moves, faro_moves, False, near_b, report))
+            if first is None:
+                continue
+            second = _meet(_side(w, moves, faro_moves, True, near_f, report), bwd)
+            if second is not None:
+                candidates.append(_merge_cuts(first + second, n))
+        candidates.append(_constructive(v))
+        return min(candidates, key=len)
+
+    stones = list(stones)
+    backup = None
+    layers = range(1, depth - covered + 1)
+    if improved is not None and layers:
+        # The streamed layers are slow; have an answer to show while they run.
+        best.offer(found)
+        if found is None or len(found) > depth:  # else the fallback could not win anyway
+            backup = fallback()
+            best.offer(backup)
+    for extra in layers:
         if found is not None and len(found) < covered + extra:
             break  # this layer only adds routes of exactly covered + extra shuffles
         hit = _meet_streamed(fwd, bwd, moves, near_f, extra, report,
-                             f"Checking routes of {covered + extra} shuffles…")
+                             f"Checking routes of {covered + extra} shuffles…", best.offer)
         if hit is not None and (found is None or len(hit) < len(found)):
             found = hit
     if found is not None and len(found) <= depth:
         return PathResult(found, True)
 
-    candidates = [found] if found is not None else []
-    stones = list(stones)
-    for k, stone in enumerate(stones):
-        report(k / len(stones), "Trying known stacks as a midpoint…", force=True)
-        w = _state(target_positions(stone, target))
-        if w in (origin, goal):
-            continue
-        first = _meet(fwd, _side(w, moves, faro_moves, False, near_b, report))
-        if first is None:
-            continue
-        second = _meet(_side(w, moves, faro_moves, True, near_f, report), bwd)
-        if second is not None:
-            candidates.append(_merge_cuts(first + second, n))
-    candidates.append(_constructive(v))
+    if backup is None:
+        backup = fallback()
+    candidates = [found, backup] if found is not None else [backup]
     return PathResult(min(candidates, key=len), False)
 
 
@@ -154,6 +175,21 @@ class _Reporter:
             if force or now - self._last >= 0.1:
                 self._last = now
                 self.progress(fraction, text)
+
+
+class _Best:
+    """The shortest route known so far; passes each improvement on to ``improved``."""
+
+    def __init__(self, improved):
+        self.improved = improved
+        self.steps = None
+
+    def offer(self, steps):
+        if steps is None or (self.steps is not None and len(steps) >= len(self.steps)):
+            return
+        self.steps = steps
+        if self.improved is not None:
+            self.improved(list(steps))
 
 
 def _state(v):
@@ -220,13 +256,14 @@ def _meet(fwd, bwd):
     return best
 
 
-def _meet_streamed(fwd, bwd, moves, root_len, layers, report, text):
+def _meet_streamed(fwd, bwd, moves, root_len, layers, report, text, on_hit=None):
     """Take every forward state ``root_len`` moves out ``layers`` moves further.
 
     Nothing is stored; each deck is only matched against the backward side,
     so this adds every route of root_len + layers + (backward depth) moves.
     On the last layer a state's whole set of next decks is checked in one
-    C-level ``isdisjoint`` call; only a hit is looked at move by move.
+    C-level ``isdisjoint`` call; only a hit is looked at move by move, and
+    each new best hit is passed to ``on_hit`` straight away.
     """
     steps = [step for step, _f, _b in moves]
     tables = [f for _s, f, _b in moves]
@@ -246,6 +283,8 @@ def _meet_streamed(fwd, bwd, moves, root_len, layers, report, text):
                     route = root_path + trail + [step] + bwd[new]
                     if best is None or len(route) < len(best):
                         best = route
+                        if on_hit is not None:
+                            on_hit(best)
             return
         if left >= 3:
             report(done / len(roots), text)  # this deep, a single root takes seconds

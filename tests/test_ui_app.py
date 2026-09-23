@@ -341,3 +341,26 @@ def test_export_writes_file_and_confirms(app, tmp_path, monkeypatch):
     monkeypatch.setattr(app_module.filedialog, "asksaveasfilename", lambda **k: str(bad))
     app.export_start()
     assert shown[0][0] == "Export" and "Could not save" in shown[0][1]
+
+
+def test_x_to_y_shows_best_so_far_and_keeps_it_on_cancel(app):
+    tab = app.x_to_y
+    tab.load_preset("start")
+    tab.model.set_cards("end", random_order(7))
+    tab.depth_var.set(6)
+    tab._on_depth("6")
+    tab.solve()
+    end = time.monotonic() + 60
+    while tab.model.outcome.status != "searching":
+        assert tab.searching and time.monotonic() < end, "no best-so-far route shown"
+        tab.frame.update()
+        time.sleep(0.02)
+    assert tab.badge.cget("text") == "SEARCHING"
+    assert "Best so far" in tab.result_msg.cget("text")
+    shown = tab._instructions()
+    assert shown.startswith(" 1.")
+    tab.cancel_search()
+    wait_for_search(tab)
+    assert tab.badge.cget("text") == "PASS"
+    assert "cancelled" in tab.result_msg.cget("text")
+    assert tab._instructions() == shown

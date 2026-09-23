@@ -15,7 +15,8 @@ import ttkbootstrap as tb
 
 from .. import deck, path_finder
 from .card_viewer import CardViewers
-from .model import PathOutcome, XToYModel, format_instructions, format_preview, search_outcome
+from .model import (PathOutcome, XToYModel, cancelled_outcome, format_instructions,
+                    format_preview, search_outcome)
 
 TEXT_DEBOUNCE_MS = 400
 POLL_MS = 100
@@ -25,6 +26,7 @@ BADGES = {  # status -> (text, bootstyle)
     "ok": ("PASS", "success"),
     "failed": ("FAIL", "danger"),
     "waiting": ("WAITING", "warning"),
+    "searching": ("SEARCHING", "info"),  # best route so far, search still running
 }
 # Rough times on a typical desktop; each depth above 5 is ~300 times slower.
 DEPTH_NOTES = {
@@ -49,6 +51,7 @@ class _SearchJob:
         self.cancel = threading.Event()
         self.done = threading.Event()
         self.progress = (None, "Starting…")
+        self.best = None  # "searching" outcome for the best route so far, if any
         self.outcome = None  # stays None when cancelled
         self.error = None
         threading.Thread(target=self._run, daemon=True).start()
@@ -56,7 +59,7 @@ class _SearchJob:
     def _run(self):
         try:
             self.outcome = search_outcome(self.cards["start"], self.cards["end"], self.depth,
-                                          self.cancel.is_set, self._report)
+                                          self.cancel.is_set, self._report, self._improved)
         except path_finder.SearchCancelled:
             pass
         except Exception as exc:  # shown in the window instead of dying silently
@@ -66,6 +69,9 @@ class _SearchJob:
 
     def _report(self, fraction, text):
         self.progress = (fraction, text)  # a single assignment, read by the Tk thread
+
+    def _improved(self, outcome):
+        self.best = outcome  # likewise
 
 
 class XToYTab:
@@ -246,6 +252,10 @@ class XToYTab:
             return
         if not job.done.is_set():
             self._show_progress(*job.progress)
+            best = job.best
+            if (best is not None and best is not self.model.outcome
+                    and job.cards == self.model.cards and not job.cancel.is_set()):
+                self.model.set_outcome(best)  # show the best route so far
             self.frame.after(POLL_MS, self._poll)
             return
         self._job = None
@@ -258,7 +268,7 @@ class XToYTab:
         if job.error is not None:
             self.model.set_outcome(PathOutcome("failed", [f"Search failed: {job.error}"]))
         elif job.outcome is None:
-            self.model.set_outcome(PathOutcome("waiting", ["Search cancelled."]))
+            self.model.set_outcome(cancelled_outcome(job.best))
         else:
             self.model.set_outcome(job.outcome)
 
