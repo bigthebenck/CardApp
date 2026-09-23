@@ -509,6 +509,9 @@ class ShuffleSolverApp:
             messagebox.showinfo("Export", "There is no verified starting order to export yet.",
                                 parent=self.root)
             return
+        notes = self._ask_export_notes()
+        if notes is None:
+            return
         path = filedialog.asksaveasfilename(parent=self.root, defaultextension=".txt",
                                             filetypes=[("Text", "*.txt"), ("All files", "*")])
         if not path:
@@ -519,11 +522,41 @@ class ShuffleSolverApp:
                       "of the upper packet and B is the top card of the rest.")
         text = (f"Shuffle sequence:\n{steps}\n\nStarting order (top first):\n"
                 + self._start_numbered() + "\n\nShorthand:\n" + self._start_shorthand() + "\n")
+        if notes:
+            text += f"\nNotes:\n{notes}\n"
 
         def write():
             with open(path, "w", encoding="utf-8") as fh:
                 fh.write(text)
         self._write_file("Export", path, write)
+
+    def _ask_export_notes(self):
+        """Ask for optional notes to end the export with; None if the user cancels."""
+        dialog = tb.Toplevel(self.root)
+        dialog.title("Export notes")
+        dialog.transient(self.root)
+        dialog.resizable(False, False)
+        tb.Label(dialog, text="Notes (optional) — added to the end of the file:").pack(
+            anchor=tk.W, padx=10, pady=(10, 4))
+        box = tk.Text(dialog, width=50, height=6, wrap=tk.WORD)
+        box.pack(padx=10)
+        result = {"notes": None}
+
+        def ok(_event=None):
+            result["notes"] = box.get("1.0", tk.END).strip()
+            dialog.destroy()
+
+        btns = tb.Frame(dialog)
+        btns.pack(fill=tk.X, padx=10, pady=10)
+        tb.Button(btns, text="Cancel", bootstyle="secondary",
+                  command=dialog.destroy).pack(side=tk.RIGHT)
+        tb.Button(btns, text="Choose file…", command=ok).pack(side=tk.RIGHT, padx=(0, 6))
+        dialog.bind("<Escape>", lambda _e: dialog.destroy())
+        dialog.bind("<Control-Return>", ok)
+        box.focus_set()
+        dialog.grab_set()
+        self.root.wait_window(dialog)
+        return result["notes"]
 
     def save_setup(self):
         path = filedialog.asksaveasfilename(parent=self.root, defaultextension=".json",

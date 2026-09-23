@@ -350,6 +350,7 @@ def test_export_writes_file_and_confirms(app, tmp_path, monkeypatch):
     monkeypatch.setattr(app_module.messagebox, "showerror", lambda *a, **k: shown.append(a))
     path = tmp_path / "start.txt"
     monkeypatch.setattr(app_module.filedialog, "asksaveasfilename", lambda **k: str(path))
+    monkeypatch.setattr(app, "_ask_export_notes", lambda: "")
     app.load_preset()
     app.model.add_step(solver.Step(ops.OUT_FARO), 0)
     app.export_start()
@@ -358,6 +359,18 @@ def test_export_writes_file_and_confirms(app, tmp_path, monkeypatch):
     assert "A is the card you see on the bottom of the upper packet" in text
     assert "Notes:" not in text
     assert shown == [("Export", f"Saved to {path}")]
+
+    shown.clear()
+    monkeypatch.setattr(app, "_ask_export_notes", lambda: "Force the 7S.\nSecond line")
+    app.export_start()
+    assert path.read_text(encoding="utf-8").endswith("\nNotes:\nForce the 7S.\nSecond line\n")
+
+    shown.clear()
+    path.unlink()
+    monkeypatch.setattr(app, "_ask_export_notes", lambda: None)  # cancelled
+    app.export_start()
+    assert not path.exists() and shown == []
+    monkeypatch.setattr(app, "_ask_export_notes", lambda: "")
 
     shown.clear()
     bad = tmp_path / "no-such-dir" / "start.txt"
