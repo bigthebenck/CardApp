@@ -13,11 +13,28 @@ from shuffle_solver.ui import theme  # noqa: E402
 from shuffle_solver.ui.app import ShuffleSolverApp  # noqa: E402
 
 
+def _forget_failed_root():
+    """Drop the Style a half-built ``tb.Window`` left behind.
+
+    Otherwise it stays bound to that root, and every later window is refused
+    with "ttkbootstrap supports a single application root window".
+    """
+    style = tb.Style.get_instance()
+    master = getattr(style, "master", None)
+    tb.Style.instance = None
+    if master is not None:
+        try:
+            master.destroy()
+        except tk.TclError:
+            pass
+
+
 @pytest.fixture
 def root():
     try:
         root = tb.Window()
     except tk.TclError as exc:
+        _forget_failed_root()
         pytest.skip(f"no display: {exc}")
     root.withdraw()
     yield root
