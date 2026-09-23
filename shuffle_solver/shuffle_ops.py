@@ -12,9 +12,18 @@ OUT_FARO = "out_faro"
 IN_FARO = "in_faro"
 OVERHAND_RUN = "overhand_run"
 CUT = "cut"
+PARTIAL_OUT_FARO = "partial_out_faro"
+PARTIAL_IN_FARO = "partial_in_faro"
 
-SHUFFLE_KINDS = (OUT_FARO, IN_FARO, OVERHAND_RUN, CUT)
-KINDS_WITH_X = (OVERHAND_RUN, CUT)
+SHUFFLE_KINDS = (OUT_FARO, IN_FARO, OVERHAND_RUN, CUT, PARTIAL_OUT_FARO, PARTIAL_IN_FARO)
+KINDS_WITH_X = (OVERHAND_RUN, CUT, PARTIAL_OUT_FARO, PARTIAL_IN_FARO)
+
+_X_NAMES = {
+    OVERHAND_RUN: "overhand run",
+    CUT: "cut",
+    PARTIAL_OUT_FARO: "partial out-faro",
+    PARTIAL_IN_FARO: "partial in-faro",
+}
 
 
 def _check_position(i, n):
@@ -35,11 +44,17 @@ def x_bounds(kind, n=DECK_SIZE):
     Overhand run: 1..n. X = 0 peels nothing (a no-op); X = n peels every card,
     which reverses the deck and is a genuine, useful step.
     Cut: 1..n-1. Both X = 0 and X = n leave the deck unchanged.
+    Partial faros: X is the packet cut off the top, which must fit into the
+    rest (X <= n/2). A partial out-faro of 1 changes nothing, so it starts at 2.
     """
     if kind == OVERHAND_RUN:
         return 1, n
     if kind == CUT:
         return 1, n - 1
+    if kind == PARTIAL_OUT_FARO:
+        return 2, n // 2
+    if kind == PARTIAL_IN_FARO:
+        return 1, n // 2
     raise ValueError(f"{kind!r} does not take an X value")
 
 
@@ -49,8 +64,7 @@ def check_x(kind, x, n=DECK_SIZE):
         raise TypeError(f"X must be an int, got {x!r}")
     lo, hi = x_bounds(kind, n)
     if not lo <= x <= hi:
-        name = "overhand run" if kind == OVERHAND_RUN else "cut"
-        raise ValueError(f"{name} X must be between {lo} and {hi}, got {x}")
+        raise ValueError(f"{_X_NAMES[kind]} X must be between {lo} and {hi}, got {x}")
 
 
 def out_faro(i, n=DECK_SIZE):
@@ -87,6 +101,29 @@ def cut(i, x, n=DECK_SIZE):
     return i - x if i >= x else i + (n - x)
 
 
+def partial_out_faro(i, x, n=DECK_SIZE):
+    """Cut off the top X cards and weave them into the top of the rest.
+
+    The packet's top card stays on top: the result starts packet, rest,
+    packet, rest, ... for 2X cards, and the rest of the deck is untouched.
+    X = n/2 is a full out-faro.
+    """
+    check_x(PARTIAL_OUT_FARO, x, n)
+    _check_position(i, n)
+    if i < x:
+        return 2 * i
+    return 2 * (i - x) + 1 if i < 2 * x else i
+
+
+def partial_in_faro(i, x, n=DECK_SIZE):
+    """As partial_out_faro, but the packet's top card becomes the second card."""
+    check_x(PARTIAL_IN_FARO, x, n)
+    _check_position(i, n)
+    if i < x:
+        return 2 * i + 1
+    return 2 * (i - x) if i < 2 * x else i
+
+
 def apply(kind, i, x=None, n=DECK_SIZE):
     """Dispatch to the position function for ``kind``."""
     if kind == OUT_FARO:
@@ -97,6 +134,10 @@ def apply(kind, i, x=None, n=DECK_SIZE):
         return overhand_run(i, x, n)
     if kind == CUT:
         return cut(i, x, n)
+    if kind == PARTIAL_OUT_FARO:
+        return partial_out_faro(i, x, n)
+    if kind == PARTIAL_IN_FARO:
+        return partial_in_faro(i, x, n)
     raise ValueError(f"unknown shuffle kind {kind!r}")
 
 

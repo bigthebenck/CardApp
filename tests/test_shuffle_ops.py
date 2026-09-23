@@ -165,3 +165,38 @@ def test_faro_rejects_bad_position_and_odd_deck(fn):
 def test_unknown_kind():
     with pytest.raises(ValueError):
         ops.apply("riffle", 0)
+
+
+# --- partial faros ----------------------------------------------------------------
+
+
+def ref_partial_faro(deck, x, out=True):
+    packet, rest = deck[:x], deck[x:]
+    woven = [c for pair in zip(packet, rest) for c in (pair if out else pair[::-1])]
+    return woven + rest[x:]
+
+
+@pytest.mark.parametrize("x", [2, 5, 18, 25, 26])
+def test_partial_out_faro_matches_reference(x):
+    deck = list(range(N))
+    assert deck_after(ops.permutation(ops.PARTIAL_OUT_FARO, x)) == ref_partial_faro(deck, x)
+
+
+@pytest.mark.parametrize("x", [1, 5, 18, 26])
+def test_partial_in_faro_matches_reference(x):
+    deck = list(range(N))
+    assert deck_after(ops.permutation(ops.PARTIAL_IN_FARO, x)) == ref_partial_faro(deck, x, False)
+
+
+def test_partial_faro_of_half_is_full_faro():
+    assert ops.permutation(ops.PARTIAL_OUT_FARO, 26) == ops.permutation(ops.OUT_FARO)
+    assert ops.permutation(ops.PARTIAL_IN_FARO, 26) == ops.permutation(ops.IN_FARO)
+
+
+def test_partial_faro_bounds():
+    assert ops.x_bounds(ops.PARTIAL_OUT_FARO) == (2, 26)
+    assert ops.x_bounds(ops.PARTIAL_IN_FARO) == (1, 26)
+    with pytest.raises(ValueError, match="partial out-faro X"):
+        ops.partial_out_faro(0, 27)
+    with pytest.raises(ValueError):
+        ops.partial_in_faro(0, 0)
