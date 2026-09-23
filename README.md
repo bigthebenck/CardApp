@@ -50,14 +50,35 @@ pip install -r requirements.txt
 python -m shuffle_solver      # or: python run_app.py
 ```
 
-Package a single executable with PyInstaller if you like:
+## Installer and updates
+
+Windows users can install the app from the
+[Releases page](https://github.com/bigthebenck/CardApp/releases)
+(`CardApp-Setup-<version>.exe`). The installer is not code-signed, so Windows
+SmartScreen may warn about it: choose *More info → Run anyway*. The installed
+app checks for a newer release when it starts. It downloads nothing unless you
+agree. Then it fetches the new installer, checks its SHA-256 and updates
+itself. You can also use *Help → Check for updates…*, and turn the startup
+check off from the same menu.
+
+To publish a release, raise `__version__` in `shuffle_solver/__init__.py`,
+commit, then push a matching tag:
 
 ```sh
-pip install pyinstaller
-pyinstaller --onefile --windowed --name ShuffleSolver   --add-data "shuffle_solver/ui/card_images:shuffle_solver/ui/card_images" run_app.py
+git tag v1.1.0 && git push origin v1.1.0
 ```
 
-(On Windows PyInstaller before 6.0, use `;` instead of `:` in `--add-data`.)
+`.github/workflows/release.yml` then runs the tests, builds the app with
+PyInstaller (`CardApp.spec`), packs it with Inno Setup
+(`installer/CardApp.iss`) and publishes the installer and its `.sha256`.
+
+To build locally, install the dev requirements and
+[Inno Setup 6](https://jrsoftware.org/isinfo.php), then run:
+
+```sh
+pyinstaller --noconfirm CardApp.spec          # -> dist/CardApp/CardApp.exe
+iscc /DAppVersion=1.1.0 installer/CardApp.iss # -> dist/CardApp-Setup-1.1.0.exe
+```
 
 ## Using it
 

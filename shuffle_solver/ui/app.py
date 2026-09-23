@@ -11,12 +11,13 @@ from tkinter import filedialog, messagebox
 
 import ttkbootstrap as tb
 
-from .. import deck, solver
+from .. import deck, solver, updater
 from .. import shuffle_ops as ops
 from . import theme
 from .card_viewer import CardViewers
 from .model import (DECK_SIZE, AppModel, format_instructions, format_preview, format_splits,
                     split_cards)
+from .update_dialog import UpdateChecker
 from .x_to_y import XToYTab
 
 TEXT_DEBOUNCE_MS = 400
@@ -46,7 +47,8 @@ BADGES = {  # status -> (text, bootstyle)
 
 
 class ShuffleSolverApp:
-    def __init__(self, root, model=None, x_to_y_model=None, settings_path=None):
+    def __init__(self, root, model=None, x_to_y_model=None, settings_path=None,
+                 check_updates=False):
         self.root = root
         self.model = model or AppModel()
         self._text_job = None
@@ -60,6 +62,7 @@ class ShuffleSolverApp:
         self.settings_path = settings_path  # None: don't load or save the theme choice
         self.theme = theme.ThemeChoice.load(settings_path)
         self.theme.apply()
+        self.updates = UpdateChecker(root, settings_path)
         self._build_menu()
 
         self.notebook = tb.Notebook(root)
@@ -74,6 +77,8 @@ class ShuffleSolverApp:
 
         self.model.subscribe(lambda _m: self.refresh())
         self.refresh()
+        if check_updates and self.updates.check_on_startup:
+            self.updates.check(manual=False)  # quiet unless a newer version is out
 
     # --- setup ----------------------------------------------------------------------
 
@@ -100,6 +105,12 @@ class ShuffleSolverApp:
         menubar.add_cascade(label="View", menu=viewmenu)
         helpmenu = tb.Menu(menubar, tearoff=False)
         helpmenu.add_command(label="Shorthand syntax", command=self.show_syntax_help)
+        helpmenu.add_separator()
+        helpmenu.add_command(label="Check for updates…", command=self.updates.check)
+        self.check_updates_var = tk.BooleanVar(value=self.updates.check_on_startup)
+        helpmenu.add_checkbutton(label="Check for updates on startup",
+                                 variable=self.check_updates_var,
+                                 command=self.toggle_update_check)
         menubar.add_cascade(label="Help", menu=helpmenu)
         self.root.config(menu=menubar)
         self.root.bind("<Control-o>", lambda e: self.open_setup())
@@ -599,10 +610,15 @@ class ShuffleSolverApp:
     def show_syntax_help(self):
         messagebox.showinfo("Shorthand syntax", deck.__doc__)
 
+    def toggle_update_check(self):
+        self.updates.check_on_startup = self.check_updates_var.get()
+
 
 def main():
     root = tb.Window()
-    ShuffleSolverApp(root, settings_path=theme.SETTINGS_PATH)
+    # Only the installed app checks by itself; running from source, use Help > Check for updates.
+    ShuffleSolverApp(root, settings_path=theme.SETTINGS_PATH,
+                     check_updates=updater.is_installed())
     root.mainloop()
 
 

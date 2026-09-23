@@ -400,3 +400,155 @@ def test_x_to_y_shows_best_so_far_and_keeps_it_on_cancel(app):
     assert tab.badge.cget("text") == "PASS"
     assert "cancelled" in tab.result_msg.cget("text")
     assert tab._instructions() == shown
+
+
+# --- update check ---------------------------------------------------------------------
+
+def newer_release():
+    from shuffle_solver import updater
+    return updater.Release("99.0.0", "https://example/releases/v99", "Notes",
+                           "https://dl/CardApp-Setup-99.0.0.exe", "CardApp-Setup-99.0.0.exe",
+                           "https://dl/CardApp-Setup-99.0.0.exe.sha256")
+
+
+def update_checker(root, tmp_path, release, installed=False):
+    from shuffle_solver.ui.update_dialog import UpdateChecker
+
+    def fetch():
+        if isinstance(release, Exception):
+            raise release
+        return release
+    return UpdateChecker(root, tmp_path / "settings.json", fetch, lambda: installed)
+
+
+def wait_for_check(checker, timeout=10):
+    end = time.monotonic() + timeout
+    while checker.checking:
+        assert time.monotonic() < end, "update check did not finish"
+        checker.root.update()
+        time.sleep(0.02)
+
+
+@pytest.fixture
+def dialogs(monkeypatch):
+    """Record message boxes instead of showing them."""
+    from shuffle_solver.ui import update_dialog
+    shown = []
+    for name in ("showinfo", "showerror"):
+        monkeypatch.setattr(update_dialog.messagebox, name,
+                            lambda title, msg, name=name, **kw: shown.append((name, msg)))
+    monkeypatch.setattr(update_dialog.messagebox, "askyesno",
+                        lambda title, msg, **kw: shown.append(("askyesno", msg)) or False)
+    return shown
+
+
+def test_update_check_is_off_unless_asked_for(app):
+    assert not app.updates.checking and app.updates.dialog is None
+
+
+def test_manual_update_check_reports_up_to_date_and_errors(root, tmp_path, dialogs):
+    from shuffle_solver import __version__, updater
+    checker = update_checker(root, tmp_path, updater.Release(__version__, "u", ""))
+    checker.check()
+    wait_for_check(checker)
+    assert dialogs == [("showinfo", f"You have the latest version ({__version__}).")]
+    assert checker.dialog is None
+
+    dialogs.clear()
+    checker = update_checker(root, tmp_path, updater.UpdateError("offline"))
+    checker.check(manual=False)
+    wait_for_check(checker)
+    assert dialogs == []  # startup checks fail quietly
+    checker.check()
+    wait_for_check(checker)
+    assert dialogs == [("showerror", "offline")]
+
+
+def test_newer_version_offers_update_and_can_be_skipped(root, tmp_path, dialogs):
+    checker = update_checker(root, tmp_path, newer_release())
+    checker.check(manual=False)
+    wait_for_check(checker)
+    dialog = checker.dialog
+    assert dialog is not None and not dialog.will_install  # not the packaged app
+    assert dialog.install_button.cget("text") == "Open release page"
+    dialog.skip()
+    assert checker.dialog is None
+    assert theme.read_settings(checker.settings_path)["skip_version"] == "99.0.0"
+
+    checker.check(manual=False)
+    wait_for_check(checker)
+    assert checker.dialog is None  # skipped versions stay quiet at startup...
+    checker.check()
+    wait_for_check(checker)
+    assert checker.dialog is not None  # ...but not when asked
+    checker.dialog.not_now()
+    assert dialogs == []
+
+
+def test_update_settings_keep_the_theme(root, tmp_path):
+    checker = update_checker(root, tmp_path, newer_release())
+    theme.ThemeChoice("nord", True).save(checker.settings_path)
+    assert checker.check_on_startup
+    checker.check_on_startup = False
+    checker.skip("2.0.0")
+    assert not checker.check_on_startup
+    assert theme.ThemeChoice.load(checker.settings_path) == theme.ThemeChoice("nord", True)
+
+
+def test_install_downloads_verifies_runs_installer_and_quits(root, tmp_path, dialogs,
+                                                             monkeypatch):
+    import hashlib
+    from shuffle_solver import updater
+    from shuffle_solver.ui import update_dialog
+    data = b"installer" * 50_000
+    monkeypatch.setattr(update_dialog.tempfile, "gettempdir", lambda: str(tmp_path))
+    monkeypatch.setattr(updater, "fetch_checksum", lambda url: hashlib.sha256(data).hexdigest())
+
+    def download(url, dest, progress, cancelled):
+        with open(dest, "wb") as f:
+            f.write(data)
+        progress(len(data), len(data))
+    monkeypatch.setattr(updater, "download", download)
+    ran, quit_ = [], []
+    monkeypatch.setattr(updater, "run_installer", ran.append)
+    monkeypatch.setattr(root, "destroy", lambda: quit_.append(True))
+
+    checker = update_checker(root, tmp_path, newer_release(), installed=True)
+    checker.check()
+    wait_for_check(checker)
+    dialog = checker.dialog
+    assert dialog.will_install and dialog.install_button.cget("text") == "Download and install"
+    dialog.install()
+    end = time.monotonic() + 10
+    while not quit_:
+        assert time.monotonic() < end, "install did not finish"
+        root.update()
+        time.sleep(0.02)
+    assert ran == [str(tmp_path / "CardApp-Setup-99.0.0.exe")]
+    assert dialogs == []
+    dialog.window.destroy()
+
+
+def test_damaged_download_is_deleted_and_not_run(root, tmp_path, dialogs, monkeypatch):
+    from shuffle_solver import updater
+    from shuffle_solver.ui import update_dialog
+    monkeypatch.setattr(update_dialog.tempfile, "gettempdir", lambda: str(tmp_path))
+    monkeypatch.setattr(updater, "fetch_checksum", lambda url: "0" * 64)
+    monkeypatch.setattr(updater, "download",
+                        lambda url, dest, progress, cancelled: open(dest, "wb").close())
+    ran = []
+    monkeypatch.setattr(updater, "run_installer", ran.append)
+
+    checker = update_checker(root, tmp_path, newer_release(), installed=True)
+    checker.check()
+    wait_for_check(checker)
+    dialog = checker.dialog
+    dialog.install()
+    end = time.monotonic() + 10
+    while dialog.worker is not None:
+        assert time.monotonic() < end, "install did not finish"
+        root.update()
+        time.sleep(0.02)
+    assert ran == [] and checker.dialog is None
+    assert not (tmp_path / "CardApp-Setup-99.0.0.exe").exists()
+    assert dialogs and dialogs[0][0] == "askyesno" and "damaged" in dialogs[0][1]

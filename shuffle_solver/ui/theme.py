@@ -2,7 +2,8 @@
 
 Colours come from the active theme through bootstyles ("success", "danger",
 ...), never from hex literals in the UI code, so every panel follows a theme
-switch. The choice is remembered in a small JSON settings file.
+switch. The choice is remembered in a small JSON settings file, which the
+update checker shares (see ``read_settings``/``write_settings``).
 """
 
 import json
@@ -13,6 +14,27 @@ import ttkbootstrap as tb
 
 SETTINGS_PATH = Path.home() / ".shuffle_solver.json"
 DEFAULT_FAMILY = "sandstone"
+
+
+def read_settings(path):
+    """Everything saved at ``path``, or ``{}`` if missing, unreadable or not a JSON object."""
+    if path is None:
+        return {}
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def write_settings(path, **values):
+    """Save ``values`` at ``path``, keeping the other settings already there."""
+    if path is None:
+        return
+    try:
+        Path(path).write_text(json.dumps({**read_settings(path), **values}), encoding="utf-8")
+    except OSError:
+        pass  # failing to remember a setting only costs its default next time
 
 
 def families():
@@ -61,22 +83,11 @@ class ThemeChoice:
     @classmethod
     def load(cls, path):
         """The choice saved at ``path``, or the default if missing or unreadable."""
-        if path is None:
-            return cls()
-        try:
-            data = json.loads(Path(path).read_text(encoding="utf-8"))
-            family, dark = data["theme"], data["dark"]
-        except (OSError, ValueError, KeyError, TypeError):
-            return cls()
+        data = read_settings(path)
+        family, dark = data.get("theme"), data.get("dark")
         if family not in families() or not isinstance(dark, bool):
             return cls()
         return cls(family, dark)
 
     def save(self, path):
-        if path is None:
-            return
-        try:
-            Path(path).write_text(json.dumps({"theme": self.family, "dark": self.dark}),
-                                  encoding="utf-8")
-        except OSError:
-            pass  # failing to remember the theme only costs the default next time
+        write_settings(path, theme=self.family, dark=self.dark)
