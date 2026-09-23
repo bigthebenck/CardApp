@@ -99,6 +99,15 @@ def test_edit_selected_x(app):
     assert "Invalid X" in app.seq_error.cget("text")
 
 
+def test_partial_faro_direction_picker(app):
+    app.new_x_var.set("9")
+    app._add_step(app._partial_kind(True))
+    app.partial_dir_var.set("bottom into top")
+    app._add_step(app._partial_kind(False))
+    assert app.step_list.get(0, "end") == (" 1. Partial Out-Faro of top 9 into top",
+                                           " 2. Partial In-Faro of bottom 9 into top")
+
+
 def test_preview_toggle(app):
     app.load_preset()
     app._add_step(ops.OUT_FARO)
@@ -141,3 +150,4 @@ def test_x_to_y_swap_keeps_typed_text(app):
     assert tab.texts["end"].get("1.0", "end").strip() == "A-KCHSD"
     assert tab.model.cards["end"] == deck.parse_cards("A-KCHSD")
     assert tab.badge.cget("text") == "WAITING"
+

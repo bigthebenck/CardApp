@@ -171,6 +171,9 @@ def test_step_labels():
     assert IN.label() == "In-Faro"
     assert run(7).label() == "Overhand Run of 7"
     assert cut(12).label() == "Cut 12"
+    assert Step(ops.PARTIAL_OUT_FARO, 18).label() == "Partial Out-Faro of top 18 into top"
+    assert (Step(ops.PARTIAL_IN_FARO_BOTTOM_TOP, 5).label()
+            == "Partial In-Faro of bottom 5 into top")
 
 
 # --- property-based round trip ----------------------------------------------------
@@ -180,6 +183,8 @@ step_strategy = st.one_of(
     st.just(IN),
     st.integers(1, 52).map(run),
     st.integers(1, 51).map(cut),
+    st.tuples(st.sampled_from(list(ops.PARTIAL_FAROS)), st.integers(2, 26)).map(
+        lambda kx: Step(*kx)),
 )
 
 

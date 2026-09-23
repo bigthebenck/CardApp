@@ -39,12 +39,23 @@ class PathResult:
 
 
 def all_steps(n=ops.DECK_SIZE):
-    """Every distinct single shuffle on an n-card deck."""
+    """Every distinct single shuffle on an n-card deck.
+
+    Shuffles that move the cards the same way as an earlier one are left out
+    (a partial faro of n/2 is a full faro; "out-faro of top 1 into bottom" is
+    cut 1), so the simpler name is the one reported.
+    """
     steps = _faro_steps(n)
     for kind in ops.KINDS_WITH_X:
         lo, hi = ops.x_bounds(kind, n)
         steps += [Step(kind, x) for x in range(lo, hi + 1)]
-    return steps
+    seen, distinct = set(), []
+    for step in steps:
+        perm = tuple(ops.permutation(step.kind, step.x, n))
+        if perm not in seen:
+            seen.add(perm)
+            distinct.append(step)
+    return distinct
 
 
 def _faro_steps(n):

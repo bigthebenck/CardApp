@@ -95,6 +95,19 @@ def test_partial_faro_found_in_short_search():
     assert result.shortest and len(result.steps) == 2
 
 
+def test_bottom_partial_faros_found_in_short_search():
+    seq = [Step(ops.PARTIAL_OUT_FARO_BOTTOM_BOTTOM, 9), Step(ops.PARTIAL_IN_FARO_BOTTOM_TOP, 20),
+           Step(ops.PARTIAL_OUT_FARO_TOP_BOTTOM, 14)]
+    result = check(NDO, simulate(NDO, seq))
+    assert result.shortest and len(result.steps) <= 3
+
+
+def test_all_steps_are_distinct_shuffles():
+    perms = [tuple(ops.permutation(s.kind, s.x)) for s in path_finder.all_steps()]
+    assert len(perms) == len(set(perms))
+    assert Step(ops.PARTIAL_OUT_FARO_TOP_BOTTOM, 1) not in path_finder.all_steps()  # = cut 1
+
+
 def test_stepping_stone_shortens_route():
     without = check(NDO, MNEMONICA)
     result = path_finder.find_path(NDO, MNEMONICA, [PREP])

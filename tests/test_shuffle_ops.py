@@ -200,3 +200,68 @@ def test_partial_faro_bounds():
         ops.partial_out_faro(0, 27)
     with pytest.raises(ValueError):
         ops.partial_in_faro(0, 0)
+
+
+# --- partial faros from/into either end --------------------------------------------
+
+
+def ref_partial_any(deck, x, source, dest, out):
+    """Cut X off ``source``, weave into X cards at ``dest`` of the rest, by hand."""
+    if source == ops.TOP:
+        packet, rest = deck[:x], deck[x:]
+    else:
+        packet, rest = deck[-x:], deck[:-x]
+    if dest == ops.TOP:
+        region, keep = rest[:x], rest[x:]
+        woven = [c for p, r in zip(packet, region) for c in ((p, r) if out else (r, p))]
+        return woven + keep
+    keep, region = rest[:-x], rest[-x:]
+    woven = [c for p, r in zip(packet, region) for c in ((r, p) if out else (p, r))]
+    return keep + woven
+
+
+@pytest.mark.parametrize("kind", list(ops.PARTIAL_FAROS))
+def test_every_partial_faro_matches_reference(kind):
+    source, dest, out = ops.PARTIAL_FAROS[kind]
+    lo, hi = ops.x_bounds(kind)
+    deck = list(range(N))
+    for x in range(lo, hi + 1):
+        assert deck_after(ops.permutation(kind, x)) == ref_partial_any(deck, x, source, dest, out)
+
+
+def test_partial_faro_small_known_orders():
+    deck10 = [ops.permutation(k, 3, 10) for k in (
+        ops.PARTIAL_OUT_FARO_TOP_BOTTOM, ops.PARTIAL_IN_FARO_BOTTOM_TOP,
+        ops.PARTIAL_OUT_FARO_BOTTOM_BOTTOM)]
+    assert [deck_after(p) for p in deck10] == [
+        [3, 4, 5, 6, 7, 0, 8, 1, 9, 2],
+        [0, 7, 1, 8, 2, 9, 3, 4, 5, 6],
+        [0, 1, 2, 3, 4, 7, 5, 8, 6, 9],
+    ]
+
+
+@pytest.mark.parametrize("out", [True, False])
+@pytest.mark.parametrize("x", [2, 7, 26])
+def test_bottom_into_bottom_is_mirror_of_top_into_top(x, out):
+    top = ops.permutation(ops.partial_faro_kind(ops.TOP, ops.TOP, out), x)
+    bottom = ops.permutation(ops.partial_faro_kind(ops.BOTTOM, ops.BOTTOM, out), x)
+    assert bottom == [N - 1 - top[N - 1 - i] for i in range(N)]
+
+
+def test_partial_faro_equivalences():
+    out_tb = ops.PARTIAL_OUT_FARO_TOP_BOTTOM
+    assert ops.permutation(out_tb, 1) == ops.permutation(ops.CUT, 1)
+    assert ops.permutation(ops.PARTIAL_OUT_FARO_BOTTOM_TOP, 1) == ops.permutation(ops.CUT, 51)
+    assert ops.permutation(ops.PARTIAL_OUT_FARO_BOTTOM_BOTTOM, 26) == ops.permutation(ops.OUT_FARO)
+    assert ops.permutation(out_tb, 26) == ops.permutation(ops.IN_FARO)
+
+
+def test_new_partial_faro_bounds_and_errors():
+    assert ops.x_bounds(ops.PARTIAL_OUT_FARO_BOTTOM_BOTTOM) == (2, 26)  # 1 is a no-op
+    for kind in (ops.PARTIAL_IN_FARO_BOTTOM_BOTTOM, ops.PARTIAL_OUT_FARO_TOP_BOTTOM,
+                 ops.PARTIAL_IN_FARO_TOP_BOTTOM, ops.PARTIAL_OUT_FARO_BOTTOM_TOP,
+                 ops.PARTIAL_IN_FARO_BOTTOM_TOP):
+        assert ops.x_bounds(kind) == (1, 26)
+    with pytest.raises(ValueError, match=r"partial in-faro \(bottom into top\) X"):
+        ops.apply(ops.PARTIAL_IN_FARO_BOTTOM_TOP, 0, 27)
+    assert ops.partial_faro_kind(ops.TOP, ops.BOTTOM, False) == ops.PARTIAL_IN_FARO_TOP_BOTTOM

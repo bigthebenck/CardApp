@@ -16,8 +16,8 @@ _LABELS = {
     ops.IN_FARO: "In-Faro",
     ops.OVERHAND_RUN: "Overhand Run",
     ops.CUT: "Cut",
-    ops.PARTIAL_OUT_FARO: "Partial Out-Faro",
-    ops.PARTIAL_IN_FARO: "Partial In-Faro",
+    **{kind: "Partial Out-Faro" if out else "Partial In-Faro"
+       for kind, (_src, _dest, out) in ops.PARTIAL_FAROS.items()},
 }
 
 
@@ -43,8 +43,9 @@ class Step:
             return f"Overhand Run of {self.x}"
         if self.kind == ops.CUT:
             return f"Cut {self.x}"
-        if self.kind in (ops.PARTIAL_OUT_FARO, ops.PARTIAL_IN_FARO):
-            return f"{_LABELS[self.kind]} of top {self.x}"
+        if self.kind in ops.PARTIAL_FAROS:
+            source, dest, _out = ops.PARTIAL_FAROS[self.kind]
+            return f"{_LABELS[self.kind]} of {source} {self.x} into {dest}"
         return _LABELS.get(self.kind, self.kind)
 
 

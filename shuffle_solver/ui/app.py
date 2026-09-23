@@ -20,6 +20,14 @@ MONO = ("Courier", 10)
 
 ALL_CARD_LABELS = [deck.Card(r, s).pretty() for s in deck.SUITS for r in deck.RANKS]
 
+# Partial faro packet choices: label -> (cut from, woven into)
+PARTIAL_DIRECTIONS = {
+    "top into top": (ops.TOP, ops.TOP),
+    "top into bottom": (ops.TOP, ops.BOTTOM),
+    "bottom into top": (ops.BOTTOM, ops.TOP),
+    "bottom into bottom": (ops.BOTTOM, ops.BOTTOM),
+}
+
 SOLVER_TAB_TITLE = "Starting Order"
 X_TO_Y_TAB_TITLE = "X to Y"
 
@@ -141,11 +149,17 @@ class ShuffleSolverApp:
         ttk.Button(add, text="+ Cut",
                    command=lambda: self._add_step(ops.CUT)).grid(row=1, column=1, sticky=tk.EW)
         ttk.Button(add, text="+ Partial Out-Faro",
-                   command=lambda: self._add_step(ops.PARTIAL_OUT_FARO)).grid(row=2, column=0,
-                                                                              sticky=tk.EW)
+                   command=lambda: self._add_step(self._partial_kind(True))).grid(
+            row=2, column=0, sticky=tk.EW)
         ttk.Button(add, text="+ Partial In-Faro",
-                   command=lambda: self._add_step(ops.PARTIAL_IN_FARO)).grid(row=2, column=1,
-                                                                             sticky=tk.EW)
+                   command=lambda: self._add_step(self._partial_kind(False))).grid(
+            row=2, column=1, sticky=tk.EW)
+        packet = ttk.Frame(add)
+        packet.grid(row=3, column=0, columnspan=2, sticky=tk.EW, pady=(2, 0))
+        ttk.Label(packet, text="Partial faro packet:").pack(side=tk.LEFT)
+        self.partial_dir_var = tk.StringVar(value=next(iter(PARTIAL_DIRECTIONS)))
+        ttk.Combobox(packet, textvariable=self.partial_dir_var, values=list(PARTIAL_DIRECTIONS),
+                     state="readonly", width=18).pack(side=tk.LEFT, padx=4)
         ttk.Label(add, text="X:").grid(row=1, column=2, rowspan=2, padx=(8, 2))
         self.new_x_var = tk.StringVar(value="5")
         ttk.Spinbox(add, from_=1, to=DECK_SIZE, width=4,
@@ -155,7 +169,7 @@ class ShuffleSolverApp:
 
         body = ttk.Frame(frame)
         body.pack(fill=tk.BOTH, expand=True, pady=6)
-        self.step_list = tk.Listbox(body, font=MONO, width=27, activestyle="dotbox",
+        self.step_list = tk.Listbox(body, font=MONO, width=38, activestyle="dotbox",
                                     exportselection=False)
         self.step_list.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         self.step_list.bind("<<ListboxSelect>>", lambda e: self._on_step_select())
@@ -185,9 +199,11 @@ class ShuffleSolverApp:
         self.seq_error = ttk.Label(frame, text="", style="Error.TLabel", wraplength=320)
         self.seq_error.pack(anchor=tk.W, pady=(4, 0))
         ttk.Label(frame, text="Overhand run: X = 1–52 (52 reverses the deck). "
-                              "Cut: X = 1–51. Partial faro: cut off the top X (up to 26) "
-                              "and weave them into the top of the rest; out keeps the "
-                              "top card on top, in makes it second.", foreground="#555",
+                              "Cut: X = 1–51. Partial faro: cut off X cards (up to 26) from "
+                              "the top or bottom and weave them into the top or bottom of "
+                              "the rest. Out keeps the packet's outer card on the outside "
+                              "(its top card on top, or its bottom card on the bottom); in "
+                              "tucks it one card inside.", foreground="#555",
                   wraplength=260).pack(anchor=tk.W)
         return frame
 
@@ -279,6 +295,10 @@ class ShuffleSolverApp:
         self.refresh()  # normalise the slot's text even when nothing changed
 
     # --- sequence events ------------------------------------------------------------------
+
+    def _partial_kind(self, out):
+        source, dest = PARTIAL_DIRECTIONS[self.partial_dir_var.get()]
+        return ops.partial_faro_kind(source, dest, out)
 
     def _selected_step(self):
         sel = self.step_list.curselection()
