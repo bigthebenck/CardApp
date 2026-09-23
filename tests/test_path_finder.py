@@ -119,3 +119,28 @@ def test_mismatched_cards_rejected():
     other = NDO[:-1] + [NDO[0]]
     with pytest.raises(ValueError, match="same cards"):
         path_finder.find_path(NDO, other)
+
+
+def test_depth_limits_what_counts_as_shortest():
+    seq = [Step(ops.OUT_FARO), Step(ops.CUT, 10), Step(ops.OVERHAND_RUN, 7)]
+    end = simulate(NDO, seq)
+    for depth in (1, 2):
+        result = path_finder.find_path(NDO, end, depth=depth)
+        assert keys(simulate(NDO, result.steps)) == keys(end) and not result.shortest
+    result = path_finder.find_path(NDO, end, depth=3)
+    assert result.shortest and len(result.steps) == 3
+
+
+@pytest.mark.parametrize("depth", [0, path_finder.MAX_DEPTH + 1])
+def test_depth_out_of_range(depth):
+    with pytest.raises(ValueError, match="search depth"):
+        path_finder.find_path(NDO, NDO, depth=depth)
+
+
+def test_progress_reported_and_cancel_raises():
+    calls = []
+    end = random.Random(4).sample(NDO, len(NDO))
+    with pytest.raises(path_finder.SearchCancelled):
+        path_finder.find_path(NDO, end, depth=6, cancel=lambda: len(calls) >= 3,
+                              progress=lambda f, text: calls.append((f, text)))
+    assert calls[0] == (None, "Building search tables…")

@@ -1,5 +1,7 @@
 """Smoke tests for the Tk window. Skipped when Tk or a display is unavailable."""
 
+import time
+
 import pytest
 
 tk = pytest.importorskip("tkinter")
@@ -19,6 +21,14 @@ def app():
     a = ShuffleSolverApp(root)
     yield a
     root.destroy()
+
+
+def wait_for_search(tab, timeout=60):
+    end = time.monotonic() + timeout
+    while tab.searching:
+        assert time.monotonic() < end, "search did not finish"
+        tab.frame.update()
+        time.sleep(0.02)
 
 
 def start_text(app):
@@ -136,6 +146,9 @@ def test_x_to_y_tab_finds_shuffles(app):
     tab.texts["end"].insert("1.0", deck.format_cards(
         solver.simulate(deck.PRESETS["New deck order"], [solver.Step(ops.IN_FARO)])))
     tab.solve()  # parses the pending text first
+    assert tab.searching and str(tab.find_button.cget("state")) == "disabled"
+    wait_for_search(tab)
+    assert str(tab.find_button.cget("state")) == "normal"
     assert tab.badge.cget("text") == "PASS"
     assert tab.steps_text.get("1.0", "end").strip() == "1. In-Faro"
     assert "1. In-Faro" in tab._instructions()
@@ -150,4 +163,48 @@ def test_x_to_y_swap_keeps_typed_text(app):
     assert tab.texts["end"].get("1.0", "end").strip() == "A-KCHSD"
     assert tab.model.cards["end"] == deck.parse_cards("A-KCHSD")
     assert tab.badge.cget("text") == "WAITING"
+
+
+def random_order(seed):
+    cards = list(deck.PRESETS["New deck order"])
+    __import__("random").Random(seed).shuffle(cards)
+    return cards
+
+
+def test_x_to_y_depth_slider_warns_above_five(app):
+    tab = app.x_to_y
+    assert tab.depth_var.get() == 5 and "⚠" not in tab.depth_note.cget("text")
+    tab.depth_var.set(6)
+    tab._on_depth("6")
+    assert tab.model.depth == 6
+    assert "⚠" in tab.depth_note.cget("text") and "minutes" in tab.depth_note.cget("text")
+
+
+def test_x_to_y_cancel_long_search(app):
+    tab = app.x_to_y
+    tab.load_preset("start")
+    tab.model.set_cards("end", random_order(5))
+    tab.depth_var.set(6)
+    tab._on_depth("6")
+    tab.solve()
+    assert tab.progress_row.winfo_manager() == "pack"
+    tab.cancel_search()
+    wait_for_search(tab)
+    assert tab.progress_row.winfo_manager() == ""
+    assert tab.badge.cget("text") == "WAITING"
+    assert "cancelled" in tab.result_msg.cget("text")
+
+
+def test_x_to_y_edit_during_search_cancels_it(app):
+    tab = app.x_to_y
+    tab.load_preset("start")
+    tab.model.set_cards("end", random_order(6))
+    tab.depth_var.set(6)
+    tab._on_depth("6")
+    tab.solve()
+    job = tab._job
+    tab.load_preset("end")  # a different ending order
+    assert job.cancel.is_set()
+    wait_for_search(tab)
+    assert tab.badge.cget("text") == "WAITING" and not tab.model.outcome.has_answer
 

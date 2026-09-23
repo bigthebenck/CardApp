@@ -244,8 +244,9 @@ class PathOutcome:
 class XToYModel:
     """Two deck orders and the shuffles found to get from the first to the second.
 
-    Finding a path can take a couple of seconds, so it only runs on ``solve()``;
-    any edit to either order clears the old answer.
+    Finding a path takes seconds (minutes above depth 5), so it only runs on
+    ``solve()``, or ``search()`` on a worker thread; any edit to either order
+    clears the old answer.
     """
 
     SIDES = ("start", "end")
@@ -253,6 +254,7 @@ class XToYModel:
     def __init__(self):
         self.cards = {"start": [], "end": []}
         self.errors = {"start": None, "end": None}  # shorthand parse errors
+        self.depth = path_finder.SHORTEST_DEPTH
         self.outcome = None
         self._listeners = []
         self._invalidate()
@@ -308,30 +310,50 @@ class XToYModel:
                 out.append(f"{title}: " + " ".join(self.report(side).messages()))
         return out
 
-    def solve(self):
+    def solve(self, cancel=None, progress=None):
+        """Search now (on this thread) and store the outcome."""
         problems = self.problems()
         if problems:
-            self.outcome = PathOutcome("waiting", problems)
-        else:
-            start, end = self.cards["start"], self.cards["end"]
-            found = path_finder.find_path(start, end, deck.PRESETS.values())
-            states = solver.intermediate_states(start, found.steps)
-            verified = [c.key for c in states[-1]] == [c.key for c in end]
-            n = len(found.steps)
-            if not verified:
-                msg = "Check failed: these shuffles do not produce the ending order."
-            elif n == 0:
-                msg = "The two orders are already the same; no shuffles needed."
-            elif found.shortest:
-                msg = f"Verified. {n} shuffle{'s' if n != 1 else ''}, the fewest possible."
-            else:
-                msg = (f"Verified. {n} shuffles. No sequence of {path_finder.SHORTEST_DEPTH} "
-                       "or fewer exists; this is the shortest route found, not necessarily "
-                       "the shortest possible.")
-            self.outcome = PathOutcome("ok" if verified else "failed", [msg], found.steps,
-                                       states, verified, found.shortest)
+            return self.set_outcome(PathOutcome("waiting", problems))
+        return self.set_outcome(search_outcome(self.cards["start"], self.cards["end"],
+                                               self.depth, cancel, progress))
+
+    def set_outcome(self, outcome):
+        self.outcome = outcome
         self._changed()
-        return self.outcome
+        return outcome
+
+    def set_depth(self, depth):
+        """How many shuffles the next search covers exhaustively.
+
+        A shown answer is kept: its message already names the depth it used.
+        """
+        if not 1 <= depth <= path_finder.MAX_DEPTH:
+            raise ValueError(f"search depth must be between 1 and {path_finder.MAX_DEPTH}")
+        self.depth = depth
+
+
+def search_outcome(start, end, depth, cancel=None, progress=None):
+    """Search from ``start`` to ``end`` (two full decks) and describe the result.
+
+    Touches no model state, so it can run on a worker thread with copies of
+    the cards. Raises path_finder.SearchCancelled when ``cancel()`` returns True.
+    """
+    found = path_finder.find_path(start, end, deck.PRESETS.values(), depth, cancel, progress)
+    states = solver.intermediate_states(start, found.steps)
+    verified = [c.key for c in states[-1]] == [c.key for c in end]
+    n = len(found.steps)
+    if not verified:
+        msg = "Check failed: these shuffles do not produce the ending order."
+    elif n == 0:
+        msg = "The two orders are already the same; no shuffles needed."
+    elif found.shortest:
+        msg = f"Verified. {n} shuffle{'s' if n != 1 else ''}, the fewest possible."
+    else:
+        msg = (f"Verified. {n} shuffles. No sequence of {depth} or fewer exists; this "
+               "is the shortest route found, not necessarily the shortest possible.")
+    return PathOutcome("ok" if verified else "failed", [msg], found.steps, states,
+                       verified, found.shortest)
 
 
 def format_instructions(steps):

@@ -208,6 +208,21 @@ def test_x_to_y_solves_and_edits_clear_the_answer():
     assert m.outcome.status == "waiting" and not m.outcome.has_answer
 
 
+def test_x_to_y_depth_setting():
+    m = XToYModel()
+    m.load_preset("start", "New deck order")
+    m.set_cards("end", simulate(NDO, [Step(ops.OUT_FARO), Step(ops.CUT, 10)]))
+    m.set_depth(1)
+    out = m.solve()
+    assert out.verified and not out.shortest
+    assert "No sequence of 1 or fewer exists" in out.messages[0]
+    m.set_depth(4)
+    assert m.outcome is out  # changing the depth keeps the shown answer
+    assert m.solve().shortest
+    with pytest.raises(ValueError):
+        m.set_depth(0)
+
+
 def test_x_to_y_shorthand_error_and_swap():
     m = XToYModel()
     assert m.set_from_text("start", "A-KC, ZZ") is not None

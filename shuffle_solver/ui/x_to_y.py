@@ -1,16 +1,22 @@
 """The "X to Y" tab: enter a starting and an ending order, get the shuffles between them.
 
 All state lives in ``XToYModel``; this module only draws it and forwards user
-edits. It contains no shuffle math.
+edits. It contains no shuffle math. The search runs on a worker thread so the
+window stays usable (and the search can be cancelled); the worker only sees
+copies of the cards and never touches Tk.
 """
 
+import gc
+import threading
+import time
 import tkinter as tk
 from tkinter import ttk
 
-from .. import deck
-from .model import XToYModel, format_instructions, format_preview
+from .. import deck, path_finder
+from .model import PathOutcome, XToYModel, format_instructions, format_preview, search_outcome
 
 TEXT_DEBOUNCE_MS = 400
+POLL_MS = 100
 MONO = ("Courier", 10)
 
 BADGES = {
@@ -19,8 +25,52 @@ BADGES = {
     "waiting": ("WAITING", "#8a6d00"),
 }
 
+WARNING_COLOR = "#b35900"
+# Rough times on a typical desktop; each depth above 5 is ~300 times slower.
+DEPTH_NOTES = {
+    1: "Checks every route of 1 shuffle. Under a second.",
+    2: "Checks every route of up to 2 shuffles. Under a second.",
+    3: "Checks every route of up to 3 shuffles. Under a second.",
+    4: "Checks every route of up to 4 shuffles. About a second.",
+    5: "Checks every route of up to 5 shuffles. A few seconds.",
+    6: "⚠ Checks every route of up to 6 shuffles. This takes around 15–30 minutes "
+       "(each shuffle above 5 makes the search ~300× slower). You can cancel it.",
+    7: "⚠ Checks every route of up to 7 shuffles. This would take several days of "
+       "computing. You can cancel it.",
+}
+
+
+class _SearchJob:
+    """One search on a worker thread; the Tk side polls ``done`` and ``progress``."""
+
+    def __init__(self, cards, depth):
+        self.cards = cards  # copies, so later edits can't reach the worker
+        self.depth = depth
+        self.cancel = threading.Event()
+        self.done = threading.Event()
+        self.progress = (None, "Starting…")
+        self.outcome = None  # stays None when cancelled
+        self.error = None
+        threading.Thread(target=self._run, daemon=True).start()
+
+    def _run(self):
+        try:
+            self.outcome = search_outcome(self.cards["start"], self.cards["end"], self.depth,
+                                          self.cancel.is_set, self._report)
+        except path_finder.SearchCancelled:
+            pass
+        except Exception as exc:  # shown in the window instead of dying silently
+            self.error = exc
+        finally:
+            self.done.set()
+
+    def _report(self, fraction, text):
+        self.progress = (fraction, text)  # a single assignment, read by the Tk thread
+
 
 class XToYTab:
+    TITLES = {"start": "X. Starting order (top first)", "end": "Y. Ending order (top first)"}
+
     def __init__(self, parent, model=None):
         self.model = model or XToYModel()
         self.frame = ttk.Frame(parent, padding=6)
@@ -28,16 +78,15 @@ class XToYTab:
         self._syncing = False
         self._text_source = None  # side whose box is being parsed right now
         self._text_cards = {"start": None, "end": None}  # cards each box last described
+        self._job = None  # the running _SearchJob, if any
+        self._phase = None  # (progress text, start time, start fraction) for the time estimate
 
         self.texts, self.errors, self.statuses, self.preset_vars = {}, {}, {}, {}
         left = ttk.Frame(self.frame)
         left.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        self._build_order_panel(left, "start", "X. Starting order (top first)")
-        mid = ttk.Frame(left)
-        mid.pack(fill=tk.X, pady=4)
-        ttk.Button(mid, text="⇅ Swap", command=self.swap).pack(side=tk.LEFT)
-        ttk.Button(mid, text="Find shuffles ▶", command=self.solve).pack(side=tk.RIGHT)
-        self._build_order_panel(left, "end", "Y. Ending order (top first)")
+        self._build_order_panel(left, "start", self.TITLES["start"])
+        self._build_search_bar(left)
+        self._build_order_panel(left, "end", self.TITLES["end"])
         self._build_result_panel(self.frame).pack(side=tk.LEFT, fill=tk.BOTH, expand=True,
                                                   padx=(6, 0))
 
@@ -71,6 +120,33 @@ class XToYTab:
         self.errors[side].pack(anchor=tk.W)
         self.statuses[side] = ttk.Label(frame, text="", wraplength=440, justify=tk.LEFT)
         self.statuses[side].pack(anchor=tk.W)
+
+    def _build_search_bar(self, parent):
+        mid = ttk.Frame(parent)
+        mid.pack(fill=tk.X, pady=4)
+        row = ttk.Frame(mid)
+        row.pack(fill=tk.X)
+        ttk.Button(row, text="⇅ Swap", command=self.swap).pack(side=tk.LEFT)
+        self.find_button = ttk.Button(row, text="Find shuffles ▶", command=self.solve)
+        self.find_button.pack(side=tk.RIGHT)
+        ttk.Label(row, text="shuffles").pack(side=tk.RIGHT, padx=(2, 12))
+        self.depth_var = tk.IntVar(value=self.model.depth)
+        self.depth_scale = tk.Scale(row, from_=1, to=path_finder.MAX_DEPTH, orient=tk.HORIZONTAL,
+                                    resolution=1, showvalue=True, length=150,
+                                    variable=self.depth_var, command=self._on_depth)
+        self.depth_scale.pack(side=tk.RIGHT)
+        ttk.Label(row, text="Shortest-route search up to").pack(side=tk.RIGHT, padx=(12, 4))
+        self.depth_note = ttk.Label(mid, text="", wraplength=440, justify=tk.LEFT)
+        self.depth_note.pack(anchor=tk.W)
+
+        self.progress_row = ttk.Frame(mid)  # shown only while a search runs
+        self.progress_bar = ttk.Progressbar(self.progress_row, maximum=1000, length=200)
+        self.progress_bar.pack(side=tk.LEFT)
+        ttk.Button(self.progress_row, text="Cancel", command=self.cancel_search).pack(
+            side=tk.RIGHT)
+        self.progress_label = ttk.Label(self.progress_row, text="")
+        self.progress_label.pack(side=tk.LEFT, padx=6, fill=tk.X, expand=True)
+        self._show_depth_note()
 
     def _build_result_panel(self, parent):
         frame = ttk.LabelFrame(parent, text="Instructions (do these in order)", padding=6)
@@ -131,15 +207,87 @@ class XToYTab:
             self.texts[side].edit_modified(False)
         self._syncing = False
 
+    @property
+    def searching(self):
+        return self._job is not None
+
     def solve(self):
+        """Start a search on a worker thread (the result arrives via ``_poll``)."""
+        if self._job is not None:
+            return
         self.apply_text()  # don't wait for the debounce if the user typed and clicked
-        top = self.frame.winfo_toplevel()
-        top.config(cursor="watch")
-        top.update_idletasks()
-        try:
-            self.model.solve()
-        finally:
-            top.config(cursor="")
+        problems = self.model.problems()
+        if problems:
+            self.model.set_outcome(PathOutcome("waiting", problems))
+            return
+        cards = {side: list(self.model.cards[side]) for side in self.model.SIDES}
+        # Free unreachable Tk objects here on the Tk thread; otherwise the worker's
+        # garbage collections could run their Tk cleanup.
+        gc.collect()
+        self._job = _SearchJob(cards, self.model.depth)
+        self._phase = None
+        self.find_button.config(state=tk.DISABLED)
+        self.depth_scale.config(state=tk.DISABLED)
+        self.progress_row.pack(fill=tk.X, pady=(4, 0))
+        self._poll()
+
+    def cancel_search(self):
+        if self._job is not None:
+            self._job.cancel.set()
+            self.progress_label.config(text="Cancelling…")
+
+    def _poll(self):
+        job = self._job
+        if job is None:
+            return
+        if not job.done.is_set():
+            self._show_progress(*job.progress)
+            self.frame.after(POLL_MS, self._poll)
+            return
+        self._job = None
+        self.progress_bar.stop()
+        self.progress_row.pack_forget()
+        self.find_button.config(state=tk.NORMAL)
+        self.depth_scale.config(state=tk.NORMAL)
+        if job.cards != self.model.cards:
+            return  # an order was edited meanwhile; the model already dropped the answer
+        if job.error is not None:
+            self.model.set_outcome(PathOutcome("failed", [f"Search failed: {job.error}"]))
+        elif job.outcome is None:
+            self.model.set_outcome(PathOutcome("waiting", ["Search cancelled."]))
+        else:
+            self.model.set_outcome(job.outcome)
+
+    def _show_progress(self, fraction, text):
+        bar = self.progress_bar
+        if fraction is None:
+            if str(bar.cget("mode")) != "indeterminate":
+                bar.config(mode="indeterminate")
+                bar.start(15)
+            self.progress_label.config(text=text)
+            return
+        if str(bar.cget("mode")) != "determinate":
+            bar.stop()
+            bar.config(mode="determinate")
+        bar["value"] = fraction * 1000
+        now = time.monotonic()
+        if self._phase is None or self._phase[0] != text:
+            self._phase = (text, now, fraction)
+        _t, t0, f0 = self._phase
+        label = f"{text} {fraction:.0%}"
+        if fraction - f0 > 0.005 and now - t0 > 3:
+            left = (now - t0) / (fraction - f0) * (1 - fraction)
+            label += f", about {_duration(left)} left"
+        self.progress_label.config(text=label)
+
+    def _on_depth(self, _value):
+        self.model.set_depth(self.depth_var.get())
+        self._show_depth_note()
+
+    def _show_depth_note(self):
+        depth = self.model.depth
+        self.depth_note.config(text=DEPTH_NOTES[depth],
+                               foreground=WARNING_COLOR if depth > 5 else "#555")
 
     def _on_text_modified(self, side):
         text = self.texts[side]
@@ -168,6 +316,8 @@ class XToYTab:
 
     def refresh(self):
         m = self.model
+        if self._job is not None and self._job.cards != m.cards:
+            self.cancel_search()  # its answer would be for orders that are gone
         for side in m.SIDES:
             # Rewrite a box only when its cards changed from somewhere else (preset,
             # swap, clear), so the user's own formatting survives.
@@ -227,3 +377,13 @@ class XToYTab:
         if text:
             self.frame.clipboard_clear()
             self.frame.clipboard_append(text)
+
+
+def _duration(seconds):
+    if seconds < 90:
+        return f"{max(round(seconds), 1)} s"
+    if seconds < 90 * 60:
+        return f"{round(seconds / 60)} min"
+    if seconds < 36 * 3600:
+        return f"{seconds / 3600:.1f} h"
+    return f"{seconds / 86400:.1f} days"

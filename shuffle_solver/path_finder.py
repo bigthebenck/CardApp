@@ -3,12 +3,15 @@
 Two stages:
 
 1. A meet-in-the-middle search over every supported shuffle (full and partial
-   faros, overhand runs, cuts). Each side stores everything two shuffles away,
-   plus everything reachable by up to ``FARO_DEPTH`` full faros and then one
-   more shuffle; one more forward layer is streamed past the backward side.
-   That finds a *shortest* sequence whenever one of ``SHORTEST_DEPTH`` or
-   fewer shuffles exists, and also finds longer
+   faros, overhand runs, cuts). Each side stores everything up to two
+   shuffles away, plus everything reachable by up to ``FARO_DEPTH`` full faros
+   and then one more shuffle. For a search depth above 4 the remaining
+   forward layers are streamed past the backward side without being stored.
+   That finds a *shortest* sequence whenever one of ``depth`` (default
+   ``SHORTEST_DEPTH``) or fewer shuffles exists, and also finds longer
    faro-heavy routes such as "4 out-faros, run 26, partial faro of 18, cut".
+   Each streamed layer multiplies the time by the number of distinct
+   shuffles (about 300): depth 5 takes seconds, 6 tens of minutes.
    Optional stepping stones (known stacks) are also tried as a midpoint:
    start -> stone -> target, each leg found by the same search.
 2. Otherwise a constructive fallback that always succeeds, but is long. Read the deck as a
@@ -19,17 +22,25 @@ Two stages:
 
 Decks are handled as lists of target positions (the card that must finish on
 top is 0), so the goal is always ``[0, 1, ..., n-1]``. Face-up flags are
-ignored when matching cards.
+ignored when matching cards. Inside the search a deck is stored the other way
+round, as bytes giving each card's position, so a shuffle is one
+``bytes.translate`` (it moves every card from position p to perm[p]).
 """
 
+import time
 from dataclasses import dataclass
 
 from . import shuffle_ops as ops
 from .solver import Step, simulate
 
-SHORTEST_DEPTH = 5  # any route this short is found, so a hit this short is optimal
+SHORTEST_DEPTH = 5  # default depth: any route this short is found, so such a hit is optimal
+MAX_DEPTH = 7  # 7 already means hundreds of billions of decks to check
+STORED_DEPTH = 2  # layers kept in memory on each side; deeper ones are streamed
 FARO_DEPTH = 6  # full faros tried in a row at each end of the search
-PREFIX = 6  # top cards compared before a full-deck match in the streamed layer
+
+
+class SearchCancelled(Exception):
+    """Raised by ``find_path`` when its ``cancel`` callback returns True."""
 
 
 @dataclass(frozen=True)
@@ -71,32 +82,54 @@ def target_positions(start, target):
     return [where[k] for k in keys]
 
 
-def find_path(start, target, stones=()):
+def find_path(start, target, stones=(), depth=SHORTEST_DEPTH, cancel=None, progress=None):
     """A list of Steps that turns ``start`` into ``target`` (same cards, any order).
 
     ``stones`` are other orders of the same cards that routes may pass through.
+    Every route of up to ``depth`` shuffles is searched, so a result that short
+    is a shortest one. ``cancel()`` is polled, and SearchCancelled is raised
+    once it returns True. ``progress(fraction, text)`` is called now and then,
+    with fraction None while the amount of work is unknown. Both are called on
+    the thread running the search.
     """
+    if not 1 <= depth <= MAX_DEPTH:
+        raise ValueError(f"search depth must be between 1 and {MAX_DEPTH}, got {depth}")
     v = target_positions(start, target)
     n = len(v)
+    if n > 256:
+        raise ValueError("decks of more than 256 cards are not supported")
+    report = _Reporter(cancel, progress)
+    report(None, "Building search tables…", force=True)
     moves = _moves(all_steps(n), n)
     faro_moves = _moves(_faro_steps(n), n)
-    fwd = _side(tuple(v), moves, faro_moves, True)
-    bwd = _side(tuple(range(n)), moves, faro_moves, False)
+    near_f = min(STORED_DEPTH, (depth + 1) // 2)
+    near_b = min(STORED_DEPTH, depth // 2)
+    origin, goal = _state(v), _state(range(n))
+    fwd = _side(origin, moves, faro_moves, True, near_f, report)
+    bwd = _side(goal, moves, faro_moves, False, near_b, report)
     found = _meet(fwd, bwd)
-    if found is None or len(found) > 4:
-        found = _meet_streamed(fwd, bwd, moves) or found
-    if found is not None and len(found) <= SHORTEST_DEPTH:
+    covered = near_f + near_b  # every route this short has been checked
+    for extra in range(1, depth - covered + 1):
+        if found is not None and len(found) < covered + extra:
+            break  # this layer only adds routes of exactly covered + extra shuffles
+        hit = _meet_streamed(fwd, bwd, moves, near_f, extra, report,
+                             f"Checking routes of {covered + extra} shuffles…")
+        if hit is not None and (found is None or len(hit) < len(found)):
+            found = hit
+    if found is not None and len(found) <= depth:
         return PathResult(found, True)
 
     candidates = [found] if found is not None else []
-    for stone in stones:
-        w = tuple(target_positions(stone, target))
-        if w in (tuple(v), tuple(range(n))):
+    stones = list(stones)
+    for k, stone in enumerate(stones):
+        report(k / len(stones), "Trying known stacks as a midpoint…", force=True)
+        w = _state(target_positions(stone, target))
+        if w in (origin, goal):
             continue
-        first = _meet(fwd, _side(w, moves, faro_moves, False))
+        first = _meet(fwd, _side(w, moves, faro_moves, False, near_b, report))
         if first is None:
             continue
-        second = _meet(_side(w, moves, faro_moves, True), bwd)
+        second = _meet(_side(w, moves, faro_moves, True, near_f, report), bwd)
         if second is not None:
             candidates.append(_merge_cuts(first + second, n))
     candidates.append(_constructive(v))
@@ -106,43 +139,70 @@ def find_path(start, target, stones=()):
 # --- search ------------------------------------------------------------------------
 
 
+class _Reporter:
+    """Polls ``cancel`` on every call; passes progress on at most ten times a second."""
+
+    def __init__(self, cancel, progress):
+        self.cancel, self.progress = cancel, progress
+        self._last = 0.0
+
+    def __call__(self, fraction, text, force=False):
+        if self.cancel is not None and self.cancel():
+            raise SearchCancelled()
+        if self.progress is not None:
+            now = time.monotonic()
+            if force or now - self._last >= 0.1:
+                self._last = now
+                self.progress(fraction, text)
+
+
+def _state(v):
+    """Search form of a deck: ``state[c]`` is the position of card c (``v[i]`` = card at i)."""
+    pos = bytearray(len(v))
+    for i, c in enumerate(v):
+        pos[c] = i
+    return bytes(pos)
+
+
 def _moves(steps, n):
+    """(step, forward table, backward table) for ``bytes.translate`` on search states."""
     moves = []
     for step in steps:
         perm = ops.permutation(step.kind, step.x, n)
         inv = [0] * n
         for i, p in enumerate(perm):
             inv[p] = i
-        moves.append((step, tuple(perm), tuple(inv)))
+        pad = bytes(256 - n)
+        moves.append((step, bytes(perm) + pad, bytes(inv) + pad))
     return moves
 
 
-def _grow(frontier, moves, forward, depth):
+def _grow(frontier, moves, forward, depth, report):
     """Every state within ``depth`` moves of ``frontier`` (a state -> path dict).
 
     Forward paths lead from the start to the state; backward paths lead from
     the state to the goal. Each state keeps the first (shortest) path found.
     """
+    steps = [step for step, _f, _b in moves]
+    tables = [f if forward else b for _s, f, b in moves]
     found = dict(frontier)
     layer = frontier
     for _ in range(depth):
         nxt = {}
         for state, path in layer.items():
-            get = state.__getitem__
-            for step, perm, inv in moves:
-                # Applying perm moves the card at i to perm[i], i.e. out[j] = state[inv[j]].
-                new = tuple(map(get, inv if forward else perm))
+            report(None, "Building search tables…")
+            for step, new in zip(steps, map(state.translate, tables)):
                 if new not in found:
                     found[new] = nxt[new] = path + [step] if forward else [step] + path
         layer = nxt
     return found
 
 
-def _side(origin, moves, faro_moves, forward):
-    """Everything two moves from ``origin``, plus runs of full faros then one move."""
-    near = _grow({origin: []}, moves, forward, 2)
-    faros = _grow({origin: []}, faro_moves, forward, FARO_DEPTH)
-    for state, path in _grow(faros, moves, forward, 1).items():
+def _side(origin, moves, faro_moves, forward, depth, report):
+    """Everything ``depth`` moves from ``origin``, plus runs of full faros then one move."""
+    near = _grow({origin: []}, moves, forward, depth, report)
+    faros = _grow({origin: []}, faro_moves, forward, FARO_DEPTH, report)
+    for state, path in _grow(faros, moves, forward, 1, report).items():
         if state not in near or len(path) < len(near[state]):
             near[state] = path
     return near
@@ -160,30 +220,43 @@ def _meet(fwd, bwd):
     return best
 
 
-def _meet_streamed(fwd, bwd, moves):
-    """Take every state two moves from the start one move further, without storing them.
+def _meet_streamed(fwd, bwd, moves, root_len, layers, report, text):
+    """Take every forward state ``root_len`` moves out ``layers`` moves further.
 
-    With the backward side's two moves this covers every route of 5 moves.
-    Candidates are matched on their top few cards first, which is much
-    cheaper than building every full deck.
+    Nothing is stored; each deck is only matched against the backward side,
+    so this adds every route of root_len + layers + (backward depth) moves.
+    On the last layer a state's whole set of next decks is checked in one
+    C-level ``isdisjoint`` call; only a hit is looked at move by move.
     """
-    k = PREFIX
-    by_prefix = {}
-    for state in bwd:
-        by_prefix.setdefault(state[:k], []).append(state)
-    short = [(step, inv, inv[:k]) for step, _perm, inv in moves]
+    steps = [step for step, _f, _b in moves]
+    tables = [f for _s, f, _b in moves]
+    targets = bwd.keys()
+    roots = [(state, path) for state, path in fwd.items() if len(path) == root_len]
     best = None
-    for state, path in fwd.items():
-        if len(path) != 2:
-            continue
-        get = state.__getitem__
-        for step, inv, inv_k in short:
-            hits = by_prefix.get(tuple(map(get, inv_k)))
-            if hits is None:
-                continue
-            new = tuple(map(get, inv))
-            if new in bwd and (best is None or 3 + len(bwd[new]) < len(best)):
-                best = path + [step] + bwd[new]
+    trail = []  # moves taken below the current root
+
+    def walk(state, root_path, left):
+        nonlocal best
+        if left == 1:
+            news = list(map(state.translate, tables))
+            if targets.isdisjoint(news):
+                return
+            for step, new in zip(steps, news):
+                if new in bwd:
+                    route = root_path + trail + [step] + bwd[new]
+                    if best is None or len(route) < len(best):
+                        best = route
+            return
+        if left >= 3:
+            report(done / len(roots), text)  # this deep, a single root takes seconds
+        for step, new in zip(steps, map(state.translate, tables)):
+            trail.append(step)
+            walk(new, root_path, left - 1)
+            trail.pop()
+
+    for done, (state, path) in enumerate(roots):
+        report(done / len(roots), text)
+        walk(state, path, layers)
     return best
 
 
