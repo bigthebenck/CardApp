@@ -7,10 +7,13 @@ edits. It contains no shuffle math.
 """
 
 import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox
+
+import ttkbootstrap as tb
 
 from .. import deck, solver
 from .. import shuffle_ops as ops
+from . import theme
 from .card_viewer import CardViewers
 from .model import DECK_SIZE, AppModel, format_preview
 from .x_to_y import XToYTab
@@ -32,17 +35,17 @@ PARTIAL_DIRECTIONS = {
 SOLVER_TAB_TITLE = "Starting Order"
 X_TO_Y_TAB_TITLE = "X to Y"
 
-BADGES = {
-    "ok": ("PASS", "#1e7b34"),
-    "empty_sequence": ("PASS", "#1e7b34"),
-    "failed": ("FAIL", "#b00020"),
-    "invalid_deck": ("WAITING", "#8a6d00"),
-    "invalid_steps": ("WAITING", "#8a6d00"),
+BADGES = {  # status -> (text, bootstyle)
+    "ok": ("PASS", "success"),
+    "empty_sequence": ("PASS", "success"),
+    "failed": ("FAIL", "danger"),
+    "invalid_deck": ("WAITING", "warning"),
+    "invalid_steps": ("WAITING", "warning"),
 }
 
 
 class ShuffleSolverApp:
-    def __init__(self, root, model=None, x_to_y_model=None):
+    def __init__(self, root, model=None, x_to_y_model=None, settings_path=None):
         self.root = root
         self.model = model or AppModel()
         self._text_job = None
@@ -53,12 +56,14 @@ class ShuffleSolverApp:
 
         root.title("Faro/Overhand Shuffle Solver")
         root.minsize(1200, 700)
-        self._init_styles()
+        self.settings_path = settings_path  # None: don't load or save the theme choice
+        self.theme = theme.ThemeChoice.load(settings_path)
+        self.theme.apply()
         self._build_menu()
 
-        self.notebook = ttk.Notebook(root)
+        self.notebook = tb.Notebook(root)
         self.notebook.pack(fill=tk.BOTH, expand=True, padx=6, pady=6)
-        panes = ttk.PanedWindow(self.notebook, orient=tk.HORIZONTAL)
+        panes = tb.Panedwindow(self.notebook, orient=tk.HORIZONTAL)
         self.notebook.add(panes, text=SOLVER_TAB_TITLE)
         panes.add(self._build_final_panel(panes), weight=2)
         panes.add(self._build_sequence_panel(panes), weight=1)
@@ -71,15 +76,9 @@ class ShuffleSolverApp:
 
     # --- setup ----------------------------------------------------------------------
 
-    def _init_styles(self):
-        style = ttk.Style(self.root)
-        style.configure("Dup.TCombobox", fieldbackground="#ffc9c9", foreground="#8b0000")
-        style.configure("Bad.TCombobox", fieldbackground="#ffe8a3")
-        style.configure("Error.TLabel", foreground="#b00020")
-
     def _build_menu(self):
-        menubar = tk.Menu(self.root)
-        filemenu = tk.Menu(menubar, tearoff=False)
+        menubar = tb.Menu(self.root)
+        filemenu = tb.Menu(menubar, tearoff=False)
         filemenu.add_command(label="Open setup…", command=self.open_setup, accelerator="Ctrl+O")
         filemenu.add_command(label="Save setup…", command=self.save_setup, accelerator="Ctrl+S")
         filemenu.add_separator()
@@ -87,166 +86,179 @@ class ShuffleSolverApp:
         filemenu.add_separator()
         filemenu.add_command(label="Quit", command=self.root.destroy)
         menubar.add_cascade(label="File", menu=filemenu)
-        helpmenu = tk.Menu(menubar, tearoff=False)
+        viewmenu = tb.Menu(menubar, tearoff=False)
+        self.theme_var = tk.StringVar(value=self.theme.family)
+        self.dark_var = tk.BooleanVar(value=self.theme.dark)
+        thememenu = tb.Menu(viewmenu, tearoff=False)
+        for family in theme.families():
+            thememenu.add_radiobutton(label=theme.display_name(family), value=family,
+                                      variable=self.theme_var, command=self.set_theme)
+        viewmenu.add_cascade(label="Theme", menu=thememenu)
+        viewmenu.add_checkbutton(label="Dark mode", variable=self.dark_var,
+                                 command=self.set_theme, accelerator="Ctrl+D")
+        menubar.add_cascade(label="View", menu=viewmenu)
+        helpmenu = tb.Menu(menubar, tearoff=False)
         helpmenu.add_command(label="Shorthand syntax", command=self.show_syntax_help)
         menubar.add_cascade(label="Help", menu=helpmenu)
         self.root.config(menu=menubar)
         self.root.bind("<Control-o>", lambda e: self.open_setup())
         self.root.bind("<Control-s>", lambda e: self.save_setup())
+        self.root.bind("<Control-d>", lambda e: self.toggle_dark())
 
     def _build_final_panel(self, parent):
-        frame = ttk.LabelFrame(parent, text="1. Final deck (desired order, top first)", padding=6)
+        frame = tb.LabelFrame(parent, text="1. Final deck (desired order, top first)", padding=6)
 
-        top = ttk.Frame(frame)
+        top = tb.Frame(frame)
         top.pack(fill=tk.X)
-        ttk.Label(top, text="Preset:").pack(side=tk.LEFT)
+        tb.Label(top, text="Preset:").pack(side=tk.LEFT)
         self.preset_var = tk.StringVar(value=next(iter(deck.PRESETS)))
-        ttk.Combobox(top, textvariable=self.preset_var, values=list(deck.PRESETS),
-                     state="readonly", width=20).pack(side=tk.LEFT, padx=4)
-        ttk.Button(top, text="Load", command=self.load_preset).pack(side=tk.LEFT)
-        ttk.Button(top, text="Clear", command=self.model.clear_final).pack(side=tk.RIGHT)
+        tb.Combobox(top, textvariable=self.preset_var, values=list(deck.PRESETS),
+                    state="readonly", width=20).pack(side=tk.LEFT, padx=4)
+        tb.Button(top, text="Load", command=self.load_preset).pack(side=tk.LEFT)
+        tb.Button(top, text="Clear", command=self.model.clear_final).pack(side=tk.RIGHT)
 
-        label_row = ttk.Frame(frame)
+        label_row = tb.Frame(frame)
         label_row.pack(fill=tk.X, pady=(6, 0))
-        ttk.Label(label_row, text="Shorthand (e.g.  A-KH, (A-8, 9-K)`C, K-AD, ACHSD):").pack(
+        tb.Label(label_row, text="Shorthand (e.g.  A-KH, (A-8, 9-K)`C, K-AD, ACHSD):").pack(
             side=tk.LEFT)
-        ttk.Button(label_row, text="View cards", command=self.view_final_cards).pack(
+        tb.Button(label_row, text="View cards", command=self.view_final_cards).pack(
             side=tk.RIGHT)
-        self.final_text = tk.Text(frame, height=4, width=44, wrap=tk.WORD, font=MONO, undo=True)
+        self.final_text = tb.Text(frame, height=4, width=44, wrap=tk.WORD, font=MONO, undo=True)
         self.final_text.pack(fill=tk.X)
         self.final_text.bind("<<Modified>>", self._on_text_modified)
-        self.text_error = ttk.Label(frame, text="", style="Error.TLabel", wraplength=420)
+        self.text_error = tb.Label(frame, text="", bootstyle="danger", wraplength=420)
         self.text_error.pack(anchor=tk.W)
 
-        grid = ttk.Frame(frame)
+        grid = tb.Frame(frame)
         grid.pack(anchor=tk.W, pady=(4, 0))
         self.slot_boxes = []
         self.slot_vars = []
         for i in range(DECK_SIZE):
             row, col = i % GRID_ROWS, (i // GRID_ROWS) * 2
-            ttk.Label(grid, text=f"{i + 1:>2}", font=MONO).grid(row=row, column=col, sticky=tk.E,
+            tb.Label(grid, text=f"{i + 1:>2}", font=MONO).grid(row=row, column=col, sticky=tk.E,
                                                                  padx=(6, 2))
             var = tk.StringVar()
-            box = ttk.Combobox(grid, textvariable=var, width=6, font=MONO,
-                               postcommand=lambda i=i: self._fill_slot_choices(i))
+            box = tb.Combobox(grid, textvariable=var, width=6, font=MONO,
+                              postcommand=lambda i=i: self._fill_slot_choices(i))
             box.grid(row=row, column=col + 1, pady=1, sticky=tk.W)
             for seq in ("<<ComboboxSelected>>", "<Return>", "<FocusOut>"):
                 box.bind(seq, lambda e, i=i: self._commit_slot(i))
             self.slot_boxes.append(box)
             self.slot_vars.append(var)
 
-        self.deck_status = ttk.Label(frame, text="", wraplength=420, justify=tk.LEFT)
+        self.deck_status = tb.Label(frame, text="", wraplength=420, justify=tk.LEFT)
         self.deck_status.pack(anchor=tk.W, pady=(6, 0))
         return frame
 
     def _build_sequence_panel(self, parent):
-        frame = ttk.LabelFrame(parent, text="2. Shuffle sequence (first \u2192 last)",
-                               padding=6)
+        frame = tb.LabelFrame(parent, text="2. Shuffle sequence (first \u2192 last)",
+                              padding=6)
 
-        add = ttk.Frame(frame)
+        add = tb.Frame(frame)
         add.pack(fill=tk.X)
-        ttk.Button(add, text="+ Out-Faro",
-                   command=lambda: self._add_step(ops.OUT_FARO)).grid(row=0, column=0, sticky=tk.EW)
-        ttk.Button(add, text="+ In-Faro",
-                   command=lambda: self._add_step(ops.IN_FARO)).grid(row=0, column=1, sticky=tk.EW)
-        ttk.Button(add, text="+ Overhand Run",
-                   command=lambda: self._add_step(ops.OVERHAND_RUN)).grid(row=1, column=0,
-                                                                          sticky=tk.EW)
-        ttk.Button(add, text="+ Cut",
-                   command=lambda: self._add_step(ops.CUT)).grid(row=1, column=1, sticky=tk.EW)
-        ttk.Button(add, text="+ Partial Out-Faro",
-                   command=lambda: self._add_step(self._partial_kind(True))).grid(
+        tb.Button(add, text="+ Out-Faro",
+                  command=lambda: self._add_step(ops.OUT_FARO)).grid(row=0, column=0, sticky=tk.EW)
+        tb.Button(add, text="+ In-Faro",
+                  command=lambda: self._add_step(ops.IN_FARO)).grid(row=0, column=1, sticky=tk.EW)
+        tb.Button(add, text="+ Overhand Run",
+                  command=lambda: self._add_step(ops.OVERHAND_RUN)).grid(row=1, column=0,
+                                                                         sticky=tk.EW)
+        tb.Button(add, text="+ Cut",
+                  command=lambda: self._add_step(ops.CUT)).grid(row=1, column=1, sticky=tk.EW)
+        tb.Button(add, text="+ Partial Out-Faro",
+                  command=lambda: self._add_step(self._partial_kind(True))).grid(
             row=2, column=0, sticky=tk.EW)
-        ttk.Button(add, text="+ Partial In-Faro",
-                   command=lambda: self._add_step(self._partial_kind(False))).grid(
+        tb.Button(add, text="+ Partial In-Faro",
+                  command=lambda: self._add_step(self._partial_kind(False))).grid(
             row=2, column=1, sticky=tk.EW)
-        packet = ttk.Frame(add)
+        packet = tb.Frame(add)
         packet.grid(row=3, column=0, columnspan=2, sticky=tk.EW, pady=(2, 0))
-        ttk.Label(packet, text="Partial faro packet:").pack(side=tk.LEFT)
+        tb.Label(packet, text="Partial faro packet:").pack(side=tk.LEFT)
         self.partial_dir_var = tk.StringVar(value=next(iter(PARTIAL_DIRECTIONS)))
-        ttk.Combobox(packet, textvariable=self.partial_dir_var, values=list(PARTIAL_DIRECTIONS),
-                     state="readonly", width=18).pack(side=tk.LEFT, padx=4)
-        ttk.Label(add, text="X:").grid(row=1, column=2, rowspan=2, padx=(8, 2))
+        tb.Combobox(packet, textvariable=self.partial_dir_var, values=list(PARTIAL_DIRECTIONS),
+                    state="readonly", width=18).pack(side=tk.LEFT, padx=4)
+        tb.Label(add, text="X:").grid(row=1, column=2, rowspan=2, padx=(8, 2))
         self.new_x_var = tk.StringVar(value="5")
-        ttk.Spinbox(add, from_=1, to=DECK_SIZE, width=4,
-                    textvariable=self.new_x_var).grid(row=1, column=3, rowspan=2)
+        tb.Spinbox(add, from_=1, to=DECK_SIZE, width=4,
+                   textvariable=self.new_x_var).grid(row=1, column=3, rowspan=2)
         add.columnconfigure(0, weight=1)
         add.columnconfigure(1, weight=1)
 
-        body = ttk.Frame(frame)
+        body = tb.Frame(frame)
         body.pack(fill=tk.BOTH, expand=True, pady=6)
-        self.step_list = tk.Listbox(body, font=MONO, width=38, activestyle="dotbox",
-                                    exportselection=False)
-        self.step_list.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        self.step_list.bind("<<ListboxSelect>>", lambda e: self._on_step_select())
-        self.step_list.bind("<Delete>", lambda e: self._delete_step())
-        sb = ttk.Scrollbar(body, orient=tk.VERTICAL, command=self.step_list.yview)
-        sb.pack(side=tk.LEFT, fill=tk.Y)
-        self.step_list.config(yscrollcommand=sb.set)
-
-        buttons = ttk.Frame(body)
-        buttons.pack(side=tk.LEFT, fill=tk.Y, padx=(6, 0))
+        # Buttons and scrollbar are packed first so a narrow pane squeezes the list, not them.
+        buttons = tb.Frame(body)
+        buttons.pack(side=tk.RIGHT, fill=tk.Y, padx=(6, 0))
         for text, cmd in (("↑ Up", lambda: self._move_step(-1)),
                           ("↓ Down", lambda: self._move_step(1)),
                           ("Duplicate", self._duplicate_step),
                           ("Delete", self._delete_step),
                           ("Clear all", self.model.clear_steps)):
-            ttk.Button(buttons, text=text, command=cmd).pack(fill=tk.X, pady=1)
+            tb.Button(buttons, text=text, command=cmd).pack(fill=tk.X, pady=1)
 
-        edit = ttk.Frame(frame)
+        self.step_list = tb.Listbox(body, font=MONO, width=38, activestyle="dotbox",
+                                    exportselection=False)
+        sb = tb.Scrollbar(body, orient=tk.VERTICAL, command=self.step_list.yview)
+        sb.pack(side=tk.RIGHT, fill=tk.Y)
+        self.step_list.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.step_list.bind("<<ListboxSelect>>", lambda e: self._on_step_select())
+        self.step_list.bind("<Delete>", lambda e: self._delete_step())
+        self.step_list.config(yscrollcommand=sb.set)
+
+        edit = tb.Frame(frame)
         edit.pack(fill=tk.X)
-        ttk.Label(edit, text="Selected step X:").pack(side=tk.LEFT)
+        tb.Label(edit, text="Selected step X:").pack(side=tk.LEFT)
         self.edit_x_var = tk.StringVar()
-        self.edit_x = ttk.Spinbox(edit, from_=1, to=DECK_SIZE, width=4,
-                                  textvariable=self.edit_x_var, command=self._commit_edit_x)
+        self.edit_x = tb.Spinbox(edit, from_=1, to=DECK_SIZE, width=4,
+                                 textvariable=self.edit_x_var, command=self._commit_edit_x)
         self.edit_x.pack(side=tk.LEFT, padx=4)
         self.edit_x.bind("<Return>", lambda e: self._commit_edit_x())
         self.edit_x.bind("<FocusOut>", lambda e: self._commit_edit_x())
-        self.seq_error = ttk.Label(frame, text="", style="Error.TLabel", wraplength=320)
+        self.seq_error = tb.Label(frame, text="", bootstyle="danger", wraplength=320)
         self.seq_error.pack(anchor=tk.W, pady=(4, 0))
-        ttk.Label(frame, text="Overhand run: X = 1–52 (52 reverses the deck). "
+        tb.Label(frame, text="Overhand run: X = 1–52 (52 reverses the deck). "
                               "Cut: X = 1–51. Partial faro: cut off X cards (up to 26) from "
                               "the top or bottom and weave them into the top or bottom of "
                               "the rest. Out keeps the packet's outer card on the outside "
                               "(its top card on top, or its bottom card on the bottom); in "
-                              "tucks it one card inside.", foreground="#555",
+                              "tucks it one card inside.", style="Muted.TLabel",
                   wraplength=260).pack(anchor=tk.W)
         return frame
 
     def _build_result_panel(self, parent):
-        frame = ttk.LabelFrame(parent, text="3. Starting order (set up like this)",
-                               padding=6)
+        frame = tb.LabelFrame(parent, text="3. Starting order (set up like this)",
+                              padding=6)
 
-        head = ttk.Frame(frame)
+        head = tb.Frame(frame)
         head.pack(fill=tk.X)
-        self.badge = tk.Label(head, text="", fg="white", font=("TkDefaultFont", 11, "bold"),
-                              padx=10, pady=2)
+        self.badge = tb.Label(head, text="", font=("TkDefaultFont", 11, "bold"),
+                              padding=(10, 2))
         self.badge.pack(side=tk.LEFT)
-        self.result_msg = ttk.Label(head, text="", wraplength=360, justify=tk.LEFT)
+        self.result_msg = tb.Label(head, text="", wraplength=360, justify=tk.LEFT)
         self.result_msg.pack(side=tk.LEFT, padx=8, fill=tk.X, expand=True)
 
-        self.start_text = tk.Text(frame, height=18, width=34, font=MONO, state=tk.DISABLED)
+        self.start_text = tb.Text(frame, height=18, width=34, font=MONO, state=tk.DISABLED)
         self.start_text.pack(fill=tk.BOTH, expand=True, pady=6)
 
-        btns = ttk.Frame(frame)
+        btns = tb.Frame(frame)
         btns.pack(fill=tk.X)
-        ttk.Button(btns, text="Copy shorthand",
-                   command=lambda: self._copy(self._start_shorthand())).pack(side=tk.LEFT)
-        ttk.Button(btns, text="Copy list",
-                   command=lambda: self._copy(self._start_numbered())).pack(side=tk.LEFT, padx=4)
-        ttk.Button(btns, text="Export…", command=self.export_start).pack(side=tk.LEFT)
-        ttk.Button(btns, text="View cards", command=self.view_start_cards).pack(side=tk.RIGHT)
+        tb.Button(btns, text="Copy shorthand",
+                  command=lambda: self._copy(self._start_shorthand())).pack(side=tk.LEFT)
+        tb.Button(btns, text="Copy list",
+                  command=lambda: self._copy(self._start_numbered())).pack(side=tk.LEFT, padx=4)
+        tb.Button(btns, text="Export…", command=self.export_start).pack(side=tk.LEFT)
+        tb.Button(btns, text="View cards", command=self.view_start_cards).pack(side=tk.RIGHT)
 
         self.preview_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(frame, text="Show step-by-step preview", variable=self.preview_var,
-                        command=self._toggle_preview).pack(anchor=tk.W, pady=(6, 0))
-        self.preview_frame = ttk.Frame(frame)
-        self.preview_text = tk.Text(self.preview_frame, height=14, font=MONO, wrap=tk.NONE,
+        tb.Checkbutton(frame, text="Show step-by-step preview", variable=self.preview_var,
+                       command=self._toggle_preview).pack(anchor=tk.W, pady=(6, 0))
+        self.preview_frame = tb.Frame(frame)
+        self.preview_text = tb.Text(self.preview_frame, height=14, font=MONO, wrap=tk.NONE,
                                     state=tk.DISABLED)
-        xs = ttk.Scrollbar(self.preview_frame, orient=tk.HORIZONTAL,
-                           command=self.preview_text.xview)
-        ys = ttk.Scrollbar(self.preview_frame, orient=tk.VERTICAL,
-                           command=self.preview_text.yview)
+        xs = tb.Scrollbar(self.preview_frame, orient=tk.HORIZONTAL,
+                          command=self.preview_text.xview)
+        ys = tb.Scrollbar(self.preview_frame, orient=tk.VERTICAL,
+                          command=self.preview_text.yview)
         self.preview_text.config(xscrollcommand=xs.set, yscrollcommand=ys.set)
         self.preview_text.grid(row=0, column=0, sticky=tk.NSEW)
         ys.grid(row=0, column=1, sticky=tk.NS)
@@ -400,9 +412,9 @@ class ShuffleSolverApp:
         report = m.deck_report()
         if report.ok:
             self.deck_status.config(text="✓ Full 52-card deck, no duplicates.",
-                                    foreground="#1e7b34")
+                                    bootstyle="success")
         else:
-            self.deck_status.config(text="\n".join(report.messages()), foreground="#b00020")
+            self.deck_status.config(text="\n".join(report.messages()), bootstyle="danger")
 
         sel = self._selected_step()
         self.step_list.delete(0, tk.END)
@@ -413,8 +425,8 @@ class ShuffleSolverApp:
         self._on_step_select()
 
         res = m.result
-        text, color = BADGES[res.status]
-        self.badge.config(text=text, bg=color)
+        text, style = BADGES[res.status]
+        self.badge.config(text=text, bootstyle=f"@{style}")
         self.result_msg.config(text=" ".join(res.messages))
         self._set_text(self.start_text, self._start_numbered() if res.has_answer else "")
         self._render_preview()
@@ -502,13 +514,25 @@ class ShuffleSolverApp:
         except (OSError, ValueError, KeyError, TypeError) as exc:
             messagebox.showerror("Open setup", f"Could not load {path}:\n{exc}")
 
+    # --- theme ---------------------------------------------------------------------------------
+
+    def set_theme(self):
+        """Apply the View menu's theme and dark-mode choice, and remember it."""
+        self.theme = theme.ThemeChoice(self.theme_var.get(), self.dark_var.get())
+        self.theme.apply()
+        self.theme.save(self.settings_path)
+
+    def toggle_dark(self):
+        self.dark_var.set(not self.dark_var.get())
+        self.set_theme()
+
     def show_syntax_help(self):
         messagebox.showinfo("Shorthand syntax", deck.__doc__)
 
 
 def main():
-    root = tk.Tk()
-    ShuffleSolverApp(root)
+    root = tb.Window()
+    ShuffleSolverApp(root, settings_path=theme.SETTINGS_PATH)
     root.mainloop()
 
 

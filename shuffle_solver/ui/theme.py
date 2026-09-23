@@ -1,0 +1,82 @@
+"""The window's look: a ttkbootstrap theme family, shown in light or dark mode.
+
+Colours come from the active theme through bootstyles ("success", "danger",
+...), never from hex literals in the UI code, so every panel follows a theme
+switch. The choice is remembered in a small JSON settings file.
+"""
+
+import json
+from dataclasses import dataclass
+from pathlib import Path
+
+import ttkbootstrap as tb
+
+SETTINGS_PATH = Path.home() / ".shuffle_solver.json"
+DEFAULT_FAMILY = "sandstone"
+
+
+def families():
+    """Theme families that come in both a light and a dark variant, e.g. "nord"."""
+    names = set(tb.Style().theme_names())
+    return sorted(n[:-len("-light")] for n in names
+                  if n.endswith("-light") and n[:-len("-light")] + "-dark" in names)
+
+
+def display_name(family):
+    return family.replace("-", " ").title()
+
+
+def _mix(color, base, amount):
+    """``amount`` of ``color`` blended into ``base`` (both "#rrggbb")."""
+    a, b = (tuple(int(c[i:i + 2], 16) for i in (1, 3, 5)) for c in (color, base))
+    return "#" + "".join(f"{round(x * amount + y * (1 - amount)):02x}" for x, y in zip(a, b))
+
+
+def _configure_custom_styles(style):
+    # Dimmed hint text (Muted), and tinted fields for a duplicated card (Dup) and an
+    # unreadable entry (Bad). A theme switch rebuilds every style, so these are redone
+    # after each one.
+    c = style.colors
+    style.configure("Muted.TLabel", foreground=_mix(c.fg, c.bg, 0.6))
+    style.configure("Dup.TCombobox", fieldbackground=_mix(c.danger, c.inputbg, 0.35),
+                    foreground=c.inputfg)
+    style.configure("Bad.TCombobox", fieldbackground=_mix(c.warning, c.inputbg, 0.35),
+                    foreground=c.inputfg)
+
+
+@dataclass
+class ThemeChoice:
+    family: str = DEFAULT_FAMILY
+    dark: bool = False
+
+    @property
+    def theme_name(self):
+        return f"{self.family}-{'dark' if self.dark else 'light'}"
+
+    def apply(self):
+        style = tb.Style()
+        style.theme_use(self.theme_name)
+        _configure_custom_styles(style)
+
+    @classmethod
+    def load(cls, path):
+        """The choice saved at ``path``, or the default if missing or unreadable."""
+        if path is None:
+            return cls()
+        try:
+            data = json.loads(Path(path).read_text(encoding="utf-8"))
+            family, dark = data["theme"], data["dark"]
+        except (OSError, ValueError, KeyError, TypeError):
+            return cls()
+        if family not in families() or not isinstance(dark, bool):
+            return cls()
+        return cls(family, dark)
+
+    def save(self, path):
+        if path is None:
+            return
+        try:
+            Path(path).write_text(json.dumps({"theme": self.family, "dark": self.dark}),
+                                  encoding="utf-8")
+        except OSError:
+            pass  # failing to remember the theme only costs the default next time

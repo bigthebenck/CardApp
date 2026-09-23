@@ -7,7 +7,8 @@ sync with that field until it is closed. Images are the PNGs in
 
 import tkinter as tk
 from pathlib import Path
-from tkinter import ttk
+
+import ttkbootstrap as tb
 
 IMAGE_DIR = Path(__file__).with_name("card_images")
 CARD_W, CARD_H = 96, 139
@@ -15,6 +16,7 @@ COLUMNS = 13
 GAP = 6
 LABEL_H = 16
 PAD = 10
+FELT_COLOR = "#1f6b3a"
 FACE_UP_COLOR = "#e07000"
 EMPTY_COLOR = "#999"
 
@@ -33,12 +35,14 @@ class CardViewer:
         self.win.bind("<Escape>", lambda e: self.close())
         self._images = {}  # card key -> PhotoImage, loaded on first use
 
-        self.summary = ttk.Label(self.win, text="", padding=(PAD, 6, PAD, 0))
+        self.summary = tb.Label(self.win, text="", padding=(PAD, 6, PAD, 0))
         self.summary.pack(anchor=tk.W)
-        body = ttk.Frame(self.win)
+        body = tb.Frame(self.win)
         body.pack(fill=tk.BOTH, expand=True)
-        self.canvas = tk.Canvas(body, highlightthickness=0, background="#1f6b3a")
-        sb = ttk.Scrollbar(body, orient=tk.VERTICAL, command=self.canvas.yview)
+        # The felt stays green in every theme (autostyle=False keeps ttkbootstrap off it).
+        self.canvas = tb.Canvas(body, highlightthickness=0, background=FELT_COLOR,
+                                autostyle=False)
+        sb = tb.Scrollbar(body, orient=tk.VERTICAL, command=self.canvas.yview)
         self.canvas.config(yscrollcommand=sb.set)
         self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         sb.pack(side=tk.LEFT, fill=tk.Y)

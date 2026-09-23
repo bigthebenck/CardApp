@@ -10,7 +10,8 @@ import gc
 import threading
 import time
 import tkinter as tk
-from tkinter import ttk
+
+import ttkbootstrap as tb
 
 from .. import deck, path_finder
 from .card_viewer import CardViewers
@@ -20,13 +21,11 @@ TEXT_DEBOUNCE_MS = 400
 POLL_MS = 100
 MONO = ("Courier", 10)
 
-BADGES = {
-    "ok": ("PASS", "#1e7b34"),
-    "failed": ("FAIL", "#b00020"),
-    "waiting": ("WAITING", "#8a6d00"),
+BADGES = {  # status -> (text, bootstyle)
+    "ok": ("PASS", "success"),
+    "failed": ("FAIL", "danger"),
+    "waiting": ("WAITING", "warning"),
 }
-
-WARNING_COLOR = "#b35900"
 # Rough times on a typical desktop; each depth above 5 is ~300 times slower.
 DEPTH_NOTES = {
     1: "Checks every route of 1 shuffle. Under a second.",
@@ -74,7 +73,7 @@ class XToYTab:
 
     def __init__(self, parent, model=None):
         self.model = model or XToYModel()
-        self.frame = ttk.Frame(parent, padding=6)
+        self.frame = tb.Frame(parent, padding=6)
         self._jobs = {}
         self._syncing = False
         self._text_source = None  # side whose box is being parsed right now
@@ -84,7 +83,7 @@ class XToYTab:
         self._phase = None  # (progress text, start time, start fraction) for the time estimate
 
         self.texts, self.errors, self.statuses, self.preset_vars = {}, {}, {}, {}
-        left = ttk.Frame(self.frame)
+        left = tb.Frame(self.frame)
         left.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         self._build_order_panel(left, "start", self.TITLES["start"])
         self._build_search_bar(left)
@@ -98,93 +97,93 @@ class XToYTab:
     # --- setup ----------------------------------------------------------------------
 
     def _build_order_panel(self, parent, side, title):
-        frame = ttk.LabelFrame(parent, text=title, padding=6)
+        frame = tb.LabelFrame(parent, text=title, padding=6)
         frame.pack(fill=tk.BOTH, expand=True)
 
-        top = ttk.Frame(frame)
+        top = tb.Frame(frame)
         top.pack(fill=tk.X)
-        ttk.Label(top, text="Preset:").pack(side=tk.LEFT)
+        tb.Label(top, text="Preset:").pack(side=tk.LEFT)
         var = tk.StringVar(value=next(iter(deck.PRESETS)))
         self.preset_vars[side] = var
-        ttk.Combobox(top, textvariable=var, values=list(deck.PRESETS), state="readonly",
-                     width=24).pack(side=tk.LEFT, padx=4)
-        ttk.Button(top, text="Load", command=lambda: self.load_preset(side)).pack(side=tk.LEFT)
-        ttk.Button(top, text="Clear",
-                   command=lambda: self.model.set_cards(side, [])).pack(side=tk.RIGHT)
+        tb.Combobox(top, textvariable=var, values=list(deck.PRESETS), state="readonly",
+                    width=24).pack(side=tk.LEFT, padx=4)
+        tb.Button(top, text="Load", command=lambda: self.load_preset(side)).pack(side=tk.LEFT)
+        tb.Button(top, text="Clear",
+                  command=lambda: self.model.set_cards(side, [])).pack(side=tk.RIGHT)
 
-        label_row = ttk.Frame(frame)
+        label_row = tb.Frame(frame)
         label_row.pack(fill=tk.X, pady=(6, 0))
-        ttk.Label(label_row, text="Shorthand (e.g.  A-KH, A-KC, K-AD, K-AS):").pack(side=tk.LEFT)
-        ttk.Button(label_row, text="View cards",
-                   command=lambda: self.view_cards(side)).pack(side=tk.RIGHT)
-        text = tk.Text(frame, height=5, width=52, wrap=tk.WORD, font=MONO, undo=True)
+        tb.Label(label_row, text="Shorthand (e.g.  A-KH, A-KC, K-AD, K-AS):").pack(side=tk.LEFT)
+        tb.Button(label_row, text="View cards",
+                  command=lambda: self.view_cards(side)).pack(side=tk.RIGHT)
+        text = tb.Text(frame, height=5, width=52, wrap=tk.WORD, font=MONO, undo=True)
         text.pack(fill=tk.BOTH, expand=True)
         text.bind("<<Modified>>", lambda e: self._on_text_modified(side))
         self.texts[side] = text
-        self.errors[side] = ttk.Label(frame, text="", style="Error.TLabel", wraplength=440)
+        self.errors[side] = tb.Label(frame, text="", bootstyle="danger", wraplength=440)
         self.errors[side].pack(anchor=tk.W)
-        self.statuses[side] = ttk.Label(frame, text="", wraplength=440, justify=tk.LEFT)
+        self.statuses[side] = tb.Label(frame, text="", wraplength=440, justify=tk.LEFT)
         self.statuses[side].pack(anchor=tk.W)
 
     def _build_search_bar(self, parent):
-        mid = ttk.Frame(parent)
+        mid = tb.Frame(parent)
         mid.pack(fill=tk.X, pady=4)
-        row = ttk.Frame(mid)
+        row = tb.Frame(mid)
         row.pack(fill=tk.X)
-        ttk.Button(row, text="⇅ Swap", command=self.swap).pack(side=tk.LEFT)
-        self.find_button = ttk.Button(row, text="Find shuffles ▶", command=self.solve)
+        tb.Button(row, text="⇅ Swap", command=self.swap).pack(side=tk.LEFT)
+        self.find_button = tb.Button(row, text="Find shuffles ▶", command=self.solve)
         self.find_button.pack(side=tk.RIGHT)
-        ttk.Label(row, text="shuffles").pack(side=tk.RIGHT, padx=(2, 12))
+        tb.Label(row, text="shuffles").pack(side=tk.RIGHT, padx=(2, 12))
         self.depth_var = tk.IntVar(value=self.model.depth)
-        self.depth_scale = tk.Scale(row, from_=1, to=path_finder.MAX_DEPTH, orient=tk.HORIZONTAL,
-                                    resolution=1, showvalue=True, length=150,
-                                    variable=self.depth_var, command=self._on_depth)
+        tb.Label(row, textvariable=self.depth_var, width=2, anchor=tk.E).pack(side=tk.RIGHT)
+        self.depth_scale = tb.Scale(row, from_=1, to=path_finder.MAX_DEPTH, orient=tk.HORIZONTAL,
+                                    length=150, variable=self.depth_var, command=self._on_depth)
         self.depth_scale.pack(side=tk.RIGHT)
-        ttk.Label(row, text="Shortest-route search up to").pack(side=tk.RIGHT, padx=(12, 4))
-        self.depth_note = ttk.Label(mid, text="", wraplength=440, justify=tk.LEFT)
+        tb.Label(row, text="Shortest-route search up to").pack(side=tk.RIGHT, padx=(12, 4))
+        self.depth_note = tb.Label(mid, text="", wraplength=440, justify=tk.LEFT)
         self.depth_note.pack(anchor=tk.W)
 
-        self.progress_row = ttk.Frame(mid)  # shown only while a search runs
-        self.progress_bar = ttk.Progressbar(self.progress_row, maximum=1000, length=200)
+        self.progress_row = tb.Frame(mid)  # shown only while a search runs
+        self.progress_bar = tb.Progressbar(self.progress_row, maximum=1000, length=200)
         self.progress_bar.pack(side=tk.LEFT)
-        ttk.Button(self.progress_row, text="Cancel", command=self.cancel_search).pack(
+        tb.Button(self.progress_row, text="Cancel", command=self.cancel_search).pack(
             side=tk.RIGHT)
-        self.progress_label = ttk.Label(self.progress_row, text="")
+        self.progress_label = tb.Label(self.progress_row, text="")
         self.progress_label.pack(side=tk.LEFT, padx=6, fill=tk.X, expand=True)
         self._show_depth_note()
 
     def _build_result_panel(self, parent):
-        frame = ttk.LabelFrame(parent, text="Instructions (do these in order)", padding=6)
+        frame = tb.LabelFrame(parent, text="Instructions (do these in order)", padding=6)
 
-        head = ttk.Frame(frame)
+        head = tb.Frame(frame)
         head.pack(fill=tk.X)
-        self.badge = tk.Label(head, text="", fg="white", font=("TkDefaultFont", 11, "bold"),
-                              padx=10, pady=2)
+        self.badge = tb.Label(head, text="", font=("TkDefaultFont", 11, "bold"),
+                              padding=(10, 2))
         self.badge.pack(side=tk.LEFT)
-        self.result_msg = ttk.Label(head, text="", wraplength=380, justify=tk.LEFT)
+        self.result_msg = tb.Label(head, text="", wraplength=380, justify=tk.LEFT)
         self.result_msg.pack(side=tk.LEFT, padx=8, fill=tk.X, expand=True)
 
-        body = ttk.Frame(frame)
+        body = tb.Frame(frame)
         body.pack(fill=tk.BOTH, expand=True, pady=6)
-        self.steps_text = tk.Text(body, height=18, width=30, font=MONO, state=tk.DISABLED)
+        self.steps_text = tb.Text(body, height=18, width=30, font=MONO, state=tk.DISABLED)
         self.steps_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        sb = ttk.Scrollbar(body, orient=tk.VERTICAL, command=self.steps_text.yview)
+        sb = tb.Scrollbar(body, orient=tk.VERTICAL, command=self.steps_text.yview)
         sb.pack(side=tk.LEFT, fill=tk.Y)
         self.steps_text.config(yscrollcommand=sb.set)
 
-        ttk.Button(frame, text="Copy instructions",
-                   command=lambda: self._copy(self._instructions())).pack(anchor=tk.W)
+        tb.Button(frame, text="Copy instructions",
+                  command=lambda: self._copy(self._instructions())).pack(anchor=tk.W)
 
         self.preview_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(frame, text="Show step-by-step preview", variable=self.preview_var,
-                        command=self._toggle_preview).pack(anchor=tk.W, pady=(6, 0))
-        self.preview_frame = ttk.Frame(frame)
-        self.preview_text = tk.Text(self.preview_frame, height=14, font=MONO, wrap=tk.NONE,
+        tb.Checkbutton(frame, text="Show step-by-step preview", variable=self.preview_var,
+                       command=self._toggle_preview).pack(anchor=tk.W, pady=(6, 0))
+        self.preview_frame = tb.Frame(frame)
+        self.preview_text = tb.Text(self.preview_frame, height=14, font=MONO, wrap=tk.NONE,
                                     state=tk.DISABLED)
-        xs = ttk.Scrollbar(self.preview_frame, orient=tk.HORIZONTAL,
-                           command=self.preview_text.xview)
-        ys = ttk.Scrollbar(self.preview_frame, orient=tk.VERTICAL,
-                           command=self.preview_text.yview)
+        xs = tb.Scrollbar(self.preview_frame, orient=tk.HORIZONTAL,
+                          command=self.preview_text.xview)
+        ys = tb.Scrollbar(self.preview_frame, orient=tk.VERTICAL,
+                          command=self.preview_text.yview)
         self.preview_text.config(xscrollcommand=xs.set, yscrollcommand=ys.set)
         self.preview_text.grid(row=0, column=0, sticky=tk.NSEW)
         ys.grid(row=0, column=1, sticky=tk.NS)
@@ -285,14 +284,19 @@ class XToYTab:
             label += f", about {_duration(left)} left"
         self.progress_label.config(text=label)
 
-    def _on_depth(self, _value):
-        self.model.set_depth(self.depth_var.get())
-        self._show_depth_note()
+    def _on_depth(self, value):
+        depth = round(float(value))
+        self.depth_var.set(depth)  # snap the slider to whole shuffles
+        if depth != self.model.depth:
+            self.model.set_depth(depth)
+            self._show_depth_note()
 
     def _show_depth_note(self):
         depth = self.model.depth
-        self.depth_note.config(text=DEPTH_NOTES[depth],
-                               foreground=WARNING_COLOR if depth > 5 else "#555")
+        if depth > 5:
+            self.depth_note.config(text=DEPTH_NOTES[depth], bootstyle="danger")
+        else:
+            self.depth_note.config(text=DEPTH_NOTES[depth], style="Muted.TLabel")
 
     def view_cards(self, side):
         if self._jobs.get(side) is not None:  # show what was just typed
@@ -344,14 +348,14 @@ class XToYTab:
             report = m.report(side)
             if report.ok:
                 self.statuses[side].config(text="✓ Full 52-card deck, no duplicates.",
-                                           foreground="#1e7b34")
+                                           bootstyle="success")
             else:
                 self.statuses[side].config(text="\n".join(report.messages()),
-                                           foreground="#b00020")
+                                           bootstyle="danger")
 
         out = m.outcome
-        text, color = BADGES[out.status]
-        self.badge.config(text=text, bg=color)
+        text, style = BADGES[out.status]
+        self.badge.config(text=text, bootstyle=f"@{style}")
         self.result_msg.config(text=" ".join(out.messages))
         self._set_text(self.steps_text, self._instructions() or "")
         self._render_preview()

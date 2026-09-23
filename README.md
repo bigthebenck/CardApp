@@ -42,9 +42,11 @@ PASS/FAIL badge shows that round-trip check.
 
 ## Running
 
-Requires Python 3.10+ with Tkinter (on Debian/Ubuntu: `apt install python3-tk`).
+Requires Python 3.10+ with Tkinter (on Debian/Ubuntu: `apt install python3-tk`)
+and [ttkbootstrap](https://github.com/israel-dryer/ttkbootstrap) for the themes.
 
 ```sh
+pip install -r requirements.txt
 python -m shuffle_solver      # or: python run_app.py
 ```
 
@@ -77,6 +79,10 @@ images are from [MattCain/svg-playing-cards](https://github.com/MattCain/svg-pla
 (MIT).
 
 File → Save/Open setup stores the final deck and sequence as JSON.
+
+View → Theme picks a colour theme (Sandstone by default), and View → Dark mode
+(Ctrl+D) switches it between light and dark. The choice is remembered in
+`~/.shuffle_solver.json`.
 
 ### X to Y tab
 
@@ -130,6 +136,7 @@ shuffle_solver/
   deck.py          Card, shorthand parser/formatter, validation, presets
   ui/model.py      toolkit-free app state (tested without a display)
   ui/app.py        Tkinter window and tabs
+  ui/theme.py      ttkbootstrap theme choice and the app's custom styles
   ui/x_to_y.py     the X to Y tab
   ui/card_viewer.py  "View cards" popups; images in ui/card_images/
 tests/             pytest + hypothesis

@@ -5,22 +5,28 @@ import time
 import pytest
 
 tk = pytest.importorskip("tkinter")
+tb = pytest.importorskip("ttkbootstrap")
 
 from shuffle_solver import deck, solver  # noqa: E402
 from shuffle_solver import shuffle_ops as ops  # noqa: E402
+from shuffle_solver.ui import theme  # noqa: E402
 from shuffle_solver.ui.app import ShuffleSolverApp  # noqa: E402
 
 
 @pytest.fixture
-def app():
+def root():
     try:
-        root = tk.Tk()
+        root = tb.Window()
     except tk.TclError as exc:
         pytest.skip(f"no display: {exc}")
     root.withdraw()
-    a = ShuffleSolverApp(root)
-    yield a
+    yield root
     root.destroy()
+
+
+@pytest.fixture
+def app(root):
+    return ShuffleSolverApp(root)
 
 
 def wait_for_search(tab, timeout=60):
@@ -265,4 +271,37 @@ def test_x_to_y_edit_during_search_cancels_it(app):
     assert job.cancel.is_set()
     wait_for_search(tab)
     assert tab.badge.cget("text") == "WAITING" and not tab.model.outcome.has_answer
+
+
+def test_theme_menu_switches_and_remembers_theme(root, tmp_path):
+    path = tmp_path / "settings.json"
+    a = ShuffleSolverApp(root, settings_path=path)
+    assert tb.Style().theme_use() == f"{theme.DEFAULT_FAMILY}-light"
+    a.theme_var.set("nord")
+    a.set_theme()
+    a.toggle_dark()
+    assert tb.Style().theme_use() == "nord-dark"
+    assert theme.ThemeChoice.load(path) == theme.ThemeChoice("nord", True)
+    a.load_preset()
+    assert a.badge.cget("text") == "PASS"
+    assert str(a.badge.cget("style")) == "@success.TLabel"
+
+
+def test_theme_settings_fall_back_to_default(root, tmp_path):
+    path = tmp_path / "settings.json"
+    assert theme.ThemeChoice.load(path) == theme.ThemeChoice()  # missing
+    for bad in ("not json", '{"theme": "no-such", "dark": false}', '{"theme": "nord"}',
+                '{"theme": "nord", "dark": "yes"}'):
+        path.write_text(bad, encoding="utf-8")
+        assert theme.ThemeChoice.load(path) == theme.ThemeChoice()
+    assert theme.DEFAULT_FAMILY in theme.families() and "nord" in theme.families()
+
+
+def test_card_viewer_felt_survives_theme_switch(app):
+    from shuffle_solver.ui.card_viewer import FELT_COLOR
+    app.load_preset()
+    app.view_final_cards()
+    app.dark_var.set(True)
+    app.set_theme()
+    assert app.viewers.get("final").canvas.cget("background") == FELT_COLOR
 
