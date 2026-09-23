@@ -58,13 +58,20 @@ def start_text(app):
     return app.start_text.get("1.0", "end").strip()
 
 
+def steps_shown(app):
+    """The step table's rows as (shuffle, card you see) pairs."""
+    t = app.step_list
+    return [tuple(t.set(row, col) for col in ("step", "see")) for row in t.get_children()]
+
+
 def test_preset_add_steps_and_result(app):
     app.load_preset()
     assert app.badge.cget("text") == "PASS"
     app.new_x_var.set("7")
     app._add_step(ops.OUT_FARO)
     app._add_step(ops.OVERHAND_RUN)
-    assert app.step_list.get(0, "end") == (" 1. Out-Faro", " 2. Overhand Run of 7")
+    see = app.model.result.start[25].pretty()  # bottom card of the upper half
+    assert steps_shown(app) == [("1. Out-Faro", see), ("2. Overhand Run of 7", "")]
     assert app.badge.cget("text") == "PASS"
     assert start_text(app).splitlines()[0].startswith("1.")
 
@@ -76,7 +83,8 @@ def test_reorder_in_ui_changes_result(app):
     before = start_text(app)
     app._select_step(1)
     app._move_step(-1)
-    assert app.step_list.get(0) == " 1. Cut 5"
+    assert steps_shown(app)[0] == ("1. Cut 5", "")
+    assert app._selected_step() == 0  # the moved step stays selected
     assert start_text(app) != before
 
 
@@ -132,13 +140,25 @@ def test_edit_selected_x(app):
     assert "Invalid X" in app.seq_error.cget("text")
 
 
+def test_faro_splits_shown_under_step_list(app):
+    app._add_step(ops.OUT_FARO)
+    assert app.split_label.cget("text") == ""  # no deck yet, so nothing to split
+    app.load_preset()
+    app._add_step(ops.CUT)
+    start = app.model.result.start
+    lines = app.split_label.cget("text").splitlines()
+    assert lines[0].startswith("Where to split")
+    assert lines[1:] == [f"#1  {start[25].pretty():>4} | {start[26].pretty()}"]  # not the cut
+    assert steps_shown(app) == [("1. Out-Faro", start[25].pretty()), ("2. Cut 5", "")]
+
+
 def test_partial_faro_direction_picker(app):
     app.new_x_var.set("9")
     app._add_step(app._partial_kind(True))
     app.partial_dir_var.set("bottom into top")
     app._add_step(app._partial_kind(False))
-    assert app.step_list.get(0, "end") == (" 1. Partial Out-Faro of top 9 into top",
-                                           " 2. Partial In-Faro of bottom 9 into top")
+    assert [step for step, _see in steps_shown(app)] == [
+        "1. Partial Out-Faro of top 9 into top", "2. Partial In-Faro of bottom 9 into top"]
 
 
 def test_preview_toggle(app):
@@ -173,7 +193,7 @@ def test_x_to_y_tab_finds_shuffles(app):
     wait_for_search(tab)
     assert str(tab.find_button.cget("state")) == "normal"
     assert tab.badge.cget("text") == "PASS"
-    assert tab.steps_text.get("1.0", "end").strip() == "1. In-Faro"
+    assert tab.steps_text.get("1.0", "end").strip() == "1. In-Faro  (split K♣|K♦)"
     assert "1. In-Faro" in tab._instructions()
 
 
@@ -333,7 +353,10 @@ def test_export_writes_file_and_confirms(app, tmp_path, monkeypatch):
     app.load_preset()
     app.model.add_step(solver.Step(ops.OUT_FARO), 0)
     app.export_start()
-    assert "Shuffle sequence: Out-Faro" in path.read_text(encoding="utf-8")
+    text = path.read_text(encoding="utf-8")
+    assert "Shuffle sequence:\n 1. Out-Faro  (split " in text
+    assert "A is the card you see on the bottom of the upper packet" in text
+    assert "Notes:" not in text
     assert shown == [("Export", f"Saved to {path}")]
 
     shown.clear()

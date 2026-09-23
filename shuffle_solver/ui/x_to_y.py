@@ -389,7 +389,9 @@ class XToYTab:
         out = self.model.outcome
         if not (out.has_answer and out.verified):
             return ""
-        return format_instructions(out.steps) if out.steps else "(no shuffles needed)"
+        if not out.steps:
+            return "(no shuffles needed)"
+        return format_instructions(out.steps, out.states)
 
     @staticmethod
     def _set_text(widget, text):

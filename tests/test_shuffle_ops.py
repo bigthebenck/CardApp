@@ -265,3 +265,14 @@ def test_new_partial_faro_bounds_and_errors():
     with pytest.raises(ValueError, match=r"partial in-faro \(bottom into top\) X"):
         ops.apply(ops.PARTIAL_IN_FARO_BOTTOM_TOP, 0, 27)
     assert ops.partial_faro_kind(ops.TOP, ops.BOTTOM, False) == ops.PARTIAL_IN_FARO_TOP_BOTTOM
+
+
+def test_split_point():
+    assert ops.split_point(ops.OUT_FARO) == ops.split_point(ops.IN_FARO) == 26
+    assert ops.split_point(ops.PARTIAL_OUT_FARO, 18) == 18
+    assert ops.split_point(ops.PARTIAL_IN_FARO_TOP_BOTTOM, 5) == 5
+    assert ops.split_point(ops.PARTIAL_OUT_FARO_BOTTOM_TOP, 9) == 43
+    assert ops.split_point(ops.PARTIAL_IN_FARO_BOTTOM_BOTTOM, 26) == 26
+    assert ops.split_point(ops.CUT, 10) is None and ops.split_point(ops.OVERHAND_RUN, 3) is None
+    with pytest.raises(ValueError):
+        ops.split_point(ops.PARTIAL_OUT_FARO, 30)

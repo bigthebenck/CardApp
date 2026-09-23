@@ -211,9 +211,50 @@ class AppModel:
             self.load_dict(json.load(fh))
 
 
+def split_cards(step, before):
+    """(card above, card below) the split of a faro done on the deck ``before``, else None.
+
+    The first is the bottom card of the upper packet, the face you see when the
+    deck is split in the right place; the second is the top card of the rest.
+    """
+    at = ops.split_point(step.kind, step.x, len(before))
+    return None if at is None else (before[at - 1], before[at])
+
+
+def split_note(step, before):
+    """``"split 7♠|K♦"`` for a faro (see ``split_cards``), or ``""`` for other shuffles."""
+    cards = split_cards(step, before)
+    return "" if cards is None else f"split {cards[0].pretty()}|{cards[1].pretty()}"
+
+
+def step_line(k, step, before=None):
+    """`` 3. Out-Faro  (split 7♠|K♦)``; the split is left out when ``before`` is None."""
+    note = split_note(step, before) if before is not None else ""
+    return f"{k:>2}. {step.label()}" + (f"  ({note})" if note else "")
+
+
+def format_splits(steps, states):
+    """One line per faro step: where to split the deck it is done on ("" if no faros).
+
+    ``states`` are start, after step 1, ...; step k splits states[k - 1].
+    """
+    lines = []
+    for k, step in enumerate(steps, 1):
+        cards = split_cards(step, states[k - 1])
+        if cards is not None:
+            lines.append(f"#{k:<2} {cards[0].pretty():>4} | {cards[1].pretty()}")
+    if not lines:
+        return ""
+    return ("Where to split: the card you should see on the bottom of the upper packet "
+            "| the top card of the rest\n" + "\n".join(lines))
+
+
 def format_preview(states, steps):
     """A fixed-width table: one column per state (start, after each step)."""
-    legend = [f"#{k} = {s.label()}" for k, s in enumerate(steps, 1)]
+    legend = []
+    for k, step in enumerate(steps, 1):
+        note = split_note(step, states[k - 1])
+        legend.append(f"#{k} = {step.label()}" + (f"  ({note})" if note else ""))
     headers = ["Start"] + [f"#{k}" for k in range(1, len(steps) + 1)]
     width = 8
     lines = legend + ([""] if legend else [])
@@ -384,5 +425,7 @@ def search_outcome(start, end, depth, cancel=None, progress=None, improved=None)
                        verified, found.shortest)
 
 
-def format_instructions(steps):
-    return "\n".join(f"{k:>2}. {s.label()}" for k, s in enumerate(steps, 1))
+def format_instructions(steps, states=None):
+    """Numbered steps; with ``states`` (start, after each step, ...) faros show their split."""
+    return "\n".join(step_line(k, s, states[k - 1] if states else None)
+                     for k, s in enumerate(steps, 1))

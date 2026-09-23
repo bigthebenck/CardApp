@@ -173,7 +173,8 @@ def test_format_preview(model):
     model.add_step(Step(ops.OUT_FARO))
     text = format_preview(model.result.states, model.steps)
     lines = text.splitlines()
-    assert lines[0] == "#1 = Out-Faro"
+    start = model.result.states[0]
+    assert lines[0] == f"#1 = Out-Faro  (split {start[25].pretty()}|{start[26].pretty()})"
     assert lines[2].split() == ["Pos", "Start", "#1"]
     assert len(lines) == 55
     assert lines[3].split() == ["1", "A\u2665", "A\u2665"]
@@ -237,6 +238,39 @@ def test_format_instructions():
     assert format_instructions([Step(ops.IN_FARO), Step(ops.CUT, 3)]) == " 1. In-Faro\n 2. Cut 3"
 
 
+def test_split_cards_for_faros():
+    from shuffle_solver.ui.model import split_cards, split_note
+
+    names = lambda pair: tuple(c.key for c in pair)  # noqa: E731
+    assert names(split_cards(Step(ops.OUT_FARO), NDO)) == ("KC", "KD")
+    assert names(split_cards(Step(ops.PARTIAL_IN_FARO, 18), NDO)) == ("5C", "6C")
+    assert names(split_cards(Step(ops.PARTIAL_OUT_FARO_BOTTOM_TOP, 9), NDO)) == ("TS", "9S")
+    assert split_cards(Step(ops.CUT, 5), NDO) is None
+    assert split_note(Step(ops.IN_FARO), NDO) == "split K♣|K♦"
+    assert split_note(Step(ops.CUT, 5), NDO) == ""
+
+
+def test_format_instructions_with_splits():
+    steps = [Step(ops.OUT_FARO), Step(ops.CUT, 3), Step(ops.OUT_FARO)]
+    states = [NDO] + [simulate(NDO, steps[:k]) for k in (1, 2, 3)]
+    lines = format_instructions(steps, states).splitlines()
+    assert lines[0] == " 1. Out-Faro  (split K♣|K♦)"
+    assert lines[1] == " 2. Cut 3"
+    top, rest = states[2][25].pretty(), states[2][26].pretty()
+    assert lines[2] == f" 3. Out-Faro  (split {top}|{rest})"
+
+
+def test_format_splits():
+    from shuffle_solver.ui.model import format_splits
+
+    steps = [Step(ops.CUT, 3), Step(ops.PARTIAL_OUT_FARO_BOTTOM_TOP, 9)]
+    states = [NDO, simulate(NDO, steps[:1]), simulate(NDO, steps)]
+    after_cut = states[1]
+    lines = format_splits(steps, states).splitlines()
+    assert lines[1:] == [f"#2  {after_cut[42].pretty():>4} | {after_cut[43].pretty()}"]
+    assert format_splits([Step(ops.CUT, 3)], states[:2]) == ""
+
+
 def test_search_outcome_reports_best_so_far():
     ndo = deck.PRESETS["New deck order"]
     end = __import__("random").Random(2).sample(ndo, len(ndo))
@@ -253,3 +287,11 @@ def test_cancelled_outcome_keeps_best_route():
     out = cancelled_outcome(best)
     assert out.status == "ok" and out.verified and out.steps == best.steps
     assert "Search cancelled" in out.messages[0] and "1 shuffle " in out.messages[0]
+
+
+def test_step_line():
+    from shuffle_solver.ui.model import step_line
+
+    assert step_line(2, Step(ops.OUT_FARO), NDO) == " 2. Out-Faro  (split K♣|K♦)"
+    assert step_line(3, Step(ops.CUT, 4), NDO) == " 3. Cut 4"
+    assert step_line(4, Step(ops.OUT_FARO)) == " 4. Out-Faro"

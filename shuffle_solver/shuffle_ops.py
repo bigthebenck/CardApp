@@ -185,6 +185,22 @@ def apply(kind, i, x=None, n=DECK_SIZE):
     raise ValueError(f"unknown shuffle kind {kind!r}")
 
 
+def split_point(kind, x=None, n=DECK_SIZE):
+    """For a faro, how many cards are above the split (the upper packet); else None.
+
+    A full faro splits at n/2. A partial faro splits off its packet: below the
+    top X cards when the packet comes from the top, above the bottom X when it
+    comes from the bottom.
+    """
+    if kind in (OUT_FARO, IN_FARO):
+        _check_faro_deck(n)
+        return n // 2
+    if kind in PARTIAL_FAROS:
+        check_x(kind, x, n)
+        return x if PARTIAL_FAROS[kind][0] == TOP else n - x
+    return None
+
+
 def permutation(kind, x=None, n=DECK_SIZE):
     """The whole shuffle as a list: ``perm[i]`` is where position i goes."""
     return [apply(kind, i, x, n) for i in range(n)]

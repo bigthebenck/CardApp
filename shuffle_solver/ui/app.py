@@ -15,7 +15,8 @@ from .. import deck, solver
 from .. import shuffle_ops as ops
 from . import theme
 from .card_viewer import CardViewers
-from .model import DECK_SIZE, AppModel, format_preview
+from .model import (DECK_SIZE, AppModel, format_instructions, format_preview, format_splits,
+                    split_cards)
 from .x_to_y import XToYTab
 
 TEXT_DEBOUNCE_MS = 400
@@ -196,14 +197,23 @@ class ShuffleSolverApp:
                           ("Clear all", self.model.clear_steps)):
             tb.Button(buttons, text=text, command=cmd).pack(fill=tk.X, pady=1)
 
-        self.step_list = tb.Listbox(body, font=MONO, width=38, activestyle="dotbox",
-                                    exportselection=False)
+        # Two columns so the card seen at a faro's split stays visible in a narrow pane.
+        self.step_list = tb.Treeview(body, columns=("step", "see"), show="headings",
+                                     selectmode="browse", height=10)
+        self.step_list.heading("step", text="Shuffle", anchor=tk.W)
+        self.step_list.heading("see", text="You see", anchor=tk.CENTER)
+        self.step_list.column("step", width=250, stretch=True, anchor=tk.W)
+        self.step_list.column("see", width=64, stretch=False, anchor=tk.CENTER)
         sb = tb.Scrollbar(body, orient=tk.VERTICAL, command=self.step_list.yview)
         sb.pack(side=tk.RIGHT, fill=tk.Y)
         self.step_list.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        self.step_list.bind("<<ListboxSelect>>", lambda e: self._on_step_select())
+        self.step_list.bind("<<TreeviewSelect>>", lambda e: self._on_step_select())
         self.step_list.bind("<Delete>", lambda e: self._delete_step())
         self.step_list.config(yscrollcommand=sb.set)
+
+        # Where each faro splits the deck, once there is a starting order to split.
+        self.split_label = tb.Label(frame, text="", font=MONO, justify=tk.LEFT, wraplength=320)
+        self.split_label.pack(anchor=tk.W, pady=(0, 6))
 
         edit = tb.Frame(frame)
         edit.pack(fill=tk.X)
@@ -320,14 +330,17 @@ class ShuffleSolverApp:
         return ops.partial_faro_kind(source, dest, out)
 
     def _selected_step(self):
-        sel = self.step_list.curselection()
-        return sel[0] if sel else None
+        sel = self.step_list.selection()
+        return self.step_list.index(sel[0]) if sel else None
 
     def _select_step(self, index):
-        self.step_list.selection_clear(0, tk.END)
-        if index is not None and 0 <= index < self.step_list.size():
-            self.step_list.selection_set(index)
-            self.step_list.see(index)
+        rows = self.step_list.get_children()
+        if index is not None and 0 <= index < len(rows):
+            self.step_list.selection_set(rows[index])
+            self.step_list.focus(rows[index])
+            self.step_list.see(rows[index])
+        else:
+            self.step_list.selection_set(())
         self._on_step_select()
 
     def _add_step(self, kind):
@@ -417,11 +430,17 @@ class ShuffleSolverApp:
             self.deck_status.config(text="\n".join(report.messages()), bootstyle="danger")
 
         sel = self._selected_step()
-        self.step_list.delete(0, tk.END)
+        self.step_list.delete(*self.step_list.get_children())
         for k, step in enumerate(m.steps, 1):
-            self.step_list.insert(tk.END, f"{k:>2}. {step.label()}")
-        if sel is not None and sel < len(m.steps):
-            self.step_list.selection_set(sel)
+            cards = split_cards(step, m.result.states[k - 1]) if m.result.has_answer else None
+            self.step_list.insert("", tk.END, values=(f"{k}. {step.label()}",
+                                                      cards[0].pretty() if cards else ""))
+        self.split_label.config(text=format_splits(m.steps, m.result.states)
+                                if m.result.has_answer else "")
+        rows = self.step_list.get_children()
+        if sel is not None and sel < len(rows):
+            self.step_list.selection_set(rows[sel])
+            self.step_list.focus(rows[sel])
         self._on_step_select()
 
         res = m.result
@@ -494,8 +513,11 @@ class ShuffleSolverApp:
                                             filetypes=[("Text", "*.txt"), ("All files", "*")])
         if not path:
             return
-        steps = ", ".join(s.label() for s in self.model.steps) or "(none)"
-        text = (f"Shuffle sequence: {steps}\n\nStarting order (top first):\n"
+        steps = format_instructions(self.model.steps, res.states) or "(none)"
+        if any(ops.split_point(s.kind, s.x) is not None for s in self.model.steps):
+            steps += ("\n\n(split A|B): split the deck so A is the card you see on the bottom "
+                      "of the upper packet and B is the top card of the rest.")
+        text = (f"Shuffle sequence:\n{steps}\n\nStarting order (top first):\n"
                 + self._start_numbered() + "\n\nShorthand:\n" + self._start_shorthand() + "\n")
 
         def write():
