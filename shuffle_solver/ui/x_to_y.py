@@ -13,6 +13,7 @@ import tkinter as tk
 from tkinter import ttk
 
 from .. import deck, path_finder
+from .card_viewer import CardViewers
 from .model import PathOutcome, XToYModel, format_instructions, format_preview, search_outcome
 
 TEXT_DEBOUNCE_MS = 400
@@ -78,6 +79,7 @@ class XToYTab:
         self._syncing = False
         self._text_source = None  # side whose box is being parsed right now
         self._text_cards = {"start": None, "end": None}  # cards each box last described
+        self.viewers = CardViewers(self.frame)
         self._job = None  # the running _SearchJob, if any
         self._phase = None  # (progress text, start time, start fraction) for the time estimate
 
@@ -110,8 +112,11 @@ class XToYTab:
         ttk.Button(top, text="Clear",
                    command=lambda: self.model.set_cards(side, [])).pack(side=tk.RIGHT)
 
-        ttk.Label(frame, text="Shorthand (e.g.  A-KH, A-KC, K-AD, K-AS):").pack(
-            anchor=tk.W, pady=(6, 0))
+        label_row = ttk.Frame(frame)
+        label_row.pack(fill=tk.X, pady=(6, 0))
+        ttk.Label(label_row, text="Shorthand (e.g.  A-KH, A-KC, K-AD, K-AS):").pack(side=tk.LEFT)
+        ttk.Button(label_row, text="View cards",
+                   command=lambda: self.view_cards(side)).pack(side=tk.RIGHT)
         text = tk.Text(frame, height=5, width=52, wrap=tk.WORD, font=MONO, undo=True)
         text.pack(fill=tk.BOTH, expand=True)
         text.bind("<<Modified>>", lambda e: self._on_text_modified(side))
@@ -221,8 +226,8 @@ class XToYTab:
             self.model.set_outcome(PathOutcome("waiting", problems))
             return
         cards = {side: list(self.model.cards[side]) for side in self.model.SIDES}
-        # Free unreachable Tk objects here on the Tk thread; otherwise the worker's
-        # garbage collections could run their Tk cleanup.
+        # Free unreachable Tk objects (closed popups' images, ...) here on the Tk thread;
+        # otherwise the worker's garbage collections could run their Tk cleanup.
         gc.collect()
         self._job = _SearchJob(cards, self.model.depth)
         self._phase = None
@@ -289,6 +294,11 @@ class XToYTab:
         self.depth_note.config(text=DEPTH_NOTES[depth],
                                foreground=WARNING_COLOR if depth > 5 else "#555")
 
+    def view_cards(self, side):
+        if self._jobs.get(side) is not None:  # show what was just typed
+            self.apply_text(side)
+        self.viewers.open(side, self.TITLES[side], lambda: self.model.cards[side])
+
     def _on_text_modified(self, side):
         text = self.texts[side]
         if not text.edit_modified():
@@ -345,6 +355,7 @@ class XToYTab:
         self.result_msg.config(text=" ".join(out.messages))
         self._set_text(self.steps_text, self._instructions() or "")
         self._render_preview()
+        self.viewers.refresh()
 
     def _toggle_preview(self):
         if self.preview_var.get():

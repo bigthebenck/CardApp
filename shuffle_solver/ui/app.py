@@ -11,6 +11,7 @@ from tkinter import filedialog, messagebox, ttk
 
 from .. import deck, solver
 from .. import shuffle_ops as ops
+from .card_viewer import CardViewers
 from .model import DECK_SIZE, AppModel, format_preview
 from .x_to_y import XToYTab
 
@@ -48,6 +49,7 @@ class ShuffleSolverApp:
         self._syncing_text = False
         self._text_is_source = False
         self._text_slots = None  # slots the shorthand box last described
+        self.viewers = CardViewers(root)
 
         root.title("Faro/Overhand Shuffle Solver")
         root.minsize(1200, 700)
@@ -104,8 +106,12 @@ class ShuffleSolverApp:
         ttk.Button(top, text="Load", command=self.load_preset).pack(side=tk.LEFT)
         ttk.Button(top, text="Clear", command=self.model.clear_final).pack(side=tk.RIGHT)
 
-        ttk.Label(frame, text="Shorthand (e.g.  A-KH, (A-8, 9-K)`C, K-AD, ACHSD):").pack(
-            anchor=tk.W, pady=(6, 0))
+        label_row = ttk.Frame(frame)
+        label_row.pack(fill=tk.X, pady=(6, 0))
+        ttk.Label(label_row, text="Shorthand (e.g.  A-KH, (A-8, 9-K)`C, K-AD, ACHSD):").pack(
+            side=tk.LEFT)
+        ttk.Button(label_row, text="View cards", command=self.view_final_cards).pack(
+            side=tk.RIGHT)
         self.final_text = tk.Text(frame, height=4, width=44, wrap=tk.WORD, font=MONO, undo=True)
         self.final_text.pack(fill=tk.X)
         self.final_text.bind("<<Modified>>", self._on_text_modified)
@@ -229,6 +235,7 @@ class ShuffleSolverApp:
         ttk.Button(btns, text="Copy list",
                    command=lambda: self._copy(self._start_numbered())).pack(side=tk.LEFT, padx=4)
         ttk.Button(btns, text="Export…", command=self.export_start).pack(side=tk.LEFT)
+        ttk.Button(btns, text="View cards", command=self.view_start_cards).pack(side=tk.RIGHT)
 
         self.preview_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(frame, text="Show step-by-step preview", variable=self.preview_var,
@@ -411,6 +418,7 @@ class ShuffleSolverApp:
         self.result_msg.config(text=" ".join(res.messages))
         self._set_text(self.start_text, self._start_numbered() if res.has_answer else "")
         self._render_preview()
+        self.viewers.refresh()
 
     def _toggle_preview(self):
         if self.preview_var.get():
@@ -432,6 +440,21 @@ class ShuffleSolverApp:
         widget.delete("1.0", tk.END)
         widget.insert("1.0", text)
         widget.config(state=tk.DISABLED)
+
+    # --- card image popups ------------------------------------------------------------------
+
+    def view_final_cards(self):
+        if self._text_job is not None:  # show what was just typed, not the pre-debounce slots
+            self.root.after_cancel(self._text_job)
+            self.apply_text()
+        self.viewers.open("final", "Final deck (top first)", lambda: self.model.slots)
+
+    def view_start_cards(self):
+        self.viewers.open("start", "Starting order (top first)", self._start_cards)
+
+    def _start_cards(self):
+        res = self.model.result
+        return res.start if res.has_answer else []
 
     # --- output -------------------------------------------------------------------------------
 

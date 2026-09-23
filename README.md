@@ -52,8 +52,10 @@ Package a single executable with PyInstaller if you like:
 
 ```sh
 pip install pyinstaller
-pyinstaller --onefile --windowed --name ShuffleSolver run_app.py
+pyinstaller --onefile --windowed --name ShuffleSolver   --add-data "shuffle_solver/ui/card_images:shuffle_solver/ui/card_images" run_app.py
 ```
+
+(On Windows PyInstaller before 6.0, use `;` instead of `:` in `--add-data`.)
 
 ## Using it
 
@@ -66,6 +68,13 @@ pyinstaller --onefile --windowed --name ShuffleSolver run_app.py
    selected step.
 3. **Starting order** – recomputed on every change. Copy it as shorthand or a
    numbered list, export it to a text file, or open the step-by-step preview.
+
+Every shorthand field (final deck, starting order, and X and Y on the next
+tab) has a **View cards** button. It opens a window that shows the order as card
+pictures in rows of 13, top first. Face-up cards have an orange outline, and
+empty slots are dashed. The window stays open and updates as you edit. Card
+images are from [MattCain/svg-playing-cards](https://github.com/MattCain/svg-playing-cards)
+(MIT).
 
 File → Save/Open setup stores the final deck and sequence as JSON.
 
@@ -122,6 +131,7 @@ shuffle_solver/
   ui/model.py      toolkit-free app state (tested without a display)
   ui/app.py        Tkinter window and tabs
   ui/x_to_y.py     the X to Y tab
+  ui/card_viewer.py  "View cards" popups; images in ui/card_images/
 tests/             pytest + hypothesis
 ```
 

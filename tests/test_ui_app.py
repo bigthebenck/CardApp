@@ -165,6 +165,64 @@ def test_x_to_y_swap_keeps_typed_text(app):
     assert tab.badge.cget("text") == "WAITING"
 
 
+def images_on(viewer):
+    c = viewer.canvas
+    return [item for item in c.find_all() if c.type(item) == "image"]
+
+
+def test_card_image_for_every_card():
+    from shuffle_solver.ui.card_viewer import image_path
+
+    for key in deck.FULL_DECK_KEYS:
+        assert image_path(deck.Card(key[0], key[1])).is_file(), key
+
+
+def test_view_final_cards_follows_edits(app):
+    app.load_preset()
+    viewer = app.viewers.open("final", "Final deck", lambda: app.model.slots)
+    assert len(images_on(viewer)) == 52
+    app.model.set_slot(51, None)  # trailing empty slot is dropped
+    assert len(images_on(viewer)) == 51
+    app.model.set_slot(0, None)  # inner empty slot is drawn as a placeholder
+    assert len(images_on(viewer)) == 50
+    assert "50 cards" in viewer.summary.cget("text")
+    viewer.close()
+    app.model.clear_final()  # refresh with the popup closed must not fail
+    assert app.viewers.get("final") is None
+
+
+def test_view_final_cards_uses_pending_text(app):
+    app.final_text.insert("1.0", "AC`, 2H")
+    app._on_text_modified(None)  # debounce scheduled, not yet applied
+    app.view_final_cards()
+    viewer = app.viewers.get("final")
+    assert len(images_on(viewer)) == 2
+    assert "1 face up" in viewer.summary.cget("text")
+    app.view_final_cards()  # a second click reuses the same window
+    assert app.viewers.get("final") is viewer
+
+
+def test_view_start_cards(app):
+    app.view_start_cards()
+    viewer = app.viewers.get("start")
+    assert images_on(viewer) == []
+    app.load_preset()
+    app._add_step(ops.OUT_FARO)
+    assert len(images_on(viewer)) == 52
+
+
+def test_x_to_y_view_cards(app):
+    tab = app.x_to_y
+    tab.load_preset("start")
+    tab.view_cards("start")
+    tab.view_cards("end")
+    assert len(images_on(tab.viewers.get("start"))) == 52
+    assert images_on(tab.viewers.get("end")) == []
+    tab.swap()
+    assert images_on(tab.viewers.get("start")) == []
+    assert len(images_on(tab.viewers.get("end"))) == 52
+
+
 def random_order(seed):
     cards = list(deck.PRESETS["New deck order"])
     __import__("random").Random(seed).shuffle(cards)
