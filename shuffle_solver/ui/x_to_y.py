@@ -28,17 +28,17 @@ BADGES = {  # status -> (text, bootstyle)
     "waiting": ("WAITING", "warning"),
     "searching": ("SEARCHING", "info"),  # best route so far, search still running
 }
-# Rough times on a typical desktop; each depth above 5 is ~300 times slower.
+# Rough times on a typical desktop; depth 7 is ~100 times slower than 6.
 DEPTH_NOTES = {
     1: "Checks every route of 1 shuffle. Under a second.",
     2: "Checks every route of up to 2 shuffles. Under a second.",
     3: "Checks every route of up to 3 shuffles. Under a second.",
-    4: "Checks every route of up to 4 shuffles. About a second.",
-    5: "Checks every route of up to 5 shuffles. A few seconds.",
-    6: "⚠ Checks every route of up to 6 shuffles. This takes around 15–30 minutes "
-       "(each shuffle above 5 makes the search ~300× slower). You can cancel it.",
-    7: "⚠ Checks every route of up to 7 shuffles. This would take several days of "
-       "computing. You can cancel it.",
+    4: "Checks every route of up to 4 shuffles. Under a second.",
+    5: "Checks every route of up to 5 shuffles. About a second.",
+    6: "Checks every route of up to 6 shuffles. A few seconds, and about half a GB "
+       "of memory.",
+    7: "⚠ Checks every route of up to 7 shuffles. This takes around 5–10 minutes "
+       "(about 100× slower than 6). You can cancel it.",
 }
 
 

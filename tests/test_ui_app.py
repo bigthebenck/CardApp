@@ -11,6 +11,7 @@ from shuffle_solver import deck, solver  # noqa: E402
 from shuffle_solver import shuffle_ops as ops  # noqa: E402
 from shuffle_solver.ui import theme  # noqa: E402
 from shuffle_solver.ui.app import ShuffleSolverApp  # noqa: E402
+from shuffle_solver.ui.model import format_table  # noqa: E402
 
 
 def _forget_failed_root():
@@ -60,16 +61,16 @@ def start_text(app):
 
 def steps_shown(app):
     """The step table's rows as (shuffle, card you see) pairs."""
-    t = app.step_list
+    t = app.sequence.step_list
     return [tuple(t.set(row, col) for col in ("step", "see")) for row in t.get_children()]
 
 
 def test_preset_add_steps_and_result(app):
     app.load_preset()
     assert app.badge.cget("text") == "PASS"
-    app.new_x_var.set("7")
-    app._add_step(ops.OUT_FARO)
-    app._add_step(ops.OVERHAND_RUN)
+    app.sequence.new_x_var.set("7")
+    app.sequence.add_step(ops.OUT_FARO)
+    app.sequence.add_step(ops.OVERHAND_RUN)
     see = app.model.result.start[25].pretty()  # bottom card of the upper half
     assert steps_shown(app) == [("1. Out-Faro", see), ("2. Overhand Run of 7", "")]
     assert app.badge.cget("text") == "PASS"
@@ -78,13 +79,13 @@ def test_preset_add_steps_and_result(app):
 
 def test_reorder_in_ui_changes_result(app):
     app.load_preset()
-    app._add_step(ops.OUT_FARO)
-    app._add_step(ops.CUT)
+    app.sequence.add_step(ops.OUT_FARO)
+    app.sequence.add_step(ops.CUT)
     before = start_text(app)
-    app._select_step(1)
-    app._move_step(-1)
-    assert steps_shown(app)[0] == ("1. Cut 5", "")
-    assert app._selected_step() == 0  # the moved step stays selected
+    app.sequence.select_step(1)
+    app.sequence._move_step(-1)
+    assert steps_shown(app)[0] == ("1. Cut 5", app.model.result.start[4].pretty())
+    assert app.sequence.selected_step() == 0  # the moved step stays selected
     assert start_text(app) != before
 
 
@@ -107,7 +108,7 @@ def test_shorthand_box_drives_grid(app):
     assert app.slot_vars[51].get() == "K♦`"
     assert app.badge.cget("text") == "PASS"
     # The user's own formatting is kept after an unrelated edit.
-    app._add_step(ops.IN_FARO)
+    app.sequence.add_step(ops.IN_FARO)
     assert app.final_text.get("1.0", "end").strip() == "A-KCHSD`"
 
 
@@ -129,41 +130,44 @@ def test_grid_edit_rewrites_shorthand(app):
 
 def test_edit_selected_x(app):
     app.load_preset()
-    app._add_step(ops.CUT)
-    app._select_step(0)
-    app.edit_x_var.set("26")
-    app._commit_edit_x()
+    app.sequence.add_step(ops.CUT)
+    app.sequence.select_step(0)
+    app.sequence.edit_x_var.set("26")
+    app.sequence.commit_edit_x()
     assert app.model.steps[0].x == 26
-    app.edit_x_var.set("52")
-    app._commit_edit_x()
+    app.sequence.edit_x_var.set("52")
+    app.sequence.commit_edit_x()
     assert app.model.steps[0].x == 26
-    assert "Invalid X" in app.seq_error.cget("text")
+    assert "Invalid X" in app.sequence.seq_error.cget("text")
 
 
 def test_faro_splits_shown_under_step_list(app):
-    app._add_step(ops.OUT_FARO)
-    assert app.split_label.cget("text") == ""  # no deck yet, so nothing to split
+    app.sequence.add_step(ops.OUT_FARO)
+    assert app.sequence.split_label.cget("text") == ""  # no deck yet, so nothing to split
     app.load_preset()
-    app._add_step(ops.CUT)
-    start = app.model.result.start
-    lines = app.split_label.cget("text").splitlines()
+    app.sequence.add_step(ops.CUT)
+    app.sequence.add_step(ops.OVERHAND_RUN)
+    start, mid = app.model.result.start, app.model.result.states[1]
+    lines = app.sequence.split_label.cget("text").splitlines()
     assert lines[0].startswith("Where to split")
-    assert lines[1:] == [f"#1  {start[25].pretty():>4} | {start[26].pretty()}"]  # not the cut
-    assert steps_shown(app) == [("1. Out-Faro", start[25].pretty()), ("2. Cut 5", "")]
+    assert lines[1:] == [f"#1  {start[25].pretty():>4} | {start[26].pretty()}",
+                         f"#2  {mid[4].pretty():>4} | {mid[5].pretty()}"]  # not the run
+    assert steps_shown(app) == [("1. Out-Faro", start[25].pretty()),
+                                ("2. Cut 5", mid[4].pretty()), ("3. Overhand Run of 5", "")]
 
 
 def test_partial_faro_direction_picker(app):
-    app.new_x_var.set("9")
-    app._add_step(app._partial_kind(True))
-    app.partial_dir_var.set("bottom into top")
-    app._add_step(app._partial_kind(False))
+    app.sequence.new_x_var.set("9")
+    app.sequence.add_step(app.sequence.partial_kind(True))
+    app.sequence.partial_dir_var.set("bottom into top")
+    app.sequence.add_step(app.sequence.partial_kind(False))
     assert [step for step, _see in steps_shown(app)] == [
         "1. Partial Out-Faro of top 9 into top", "2. Partial In-Faro of bottom 9 into top"]
 
 
 def test_preview_toggle(app):
     app.load_preset()
-    app._add_step(ops.OUT_FARO)
+    app.sequence.add_step(ops.OUT_FARO)
     app.preview_var.set(True)
     app._toggle_preview()
     text = app.preview_text.get("1.0", "end")
@@ -172,14 +176,14 @@ def test_preview_toggle(app):
 
 def test_copy_shorthand_parses_back(app):
     app.load_preset()
-    app._add_step(ops.OUT_FARO)
+    app.sequence.add_step(ops.OUT_FARO)
     text = app._start_shorthand()
     assert deck.parse_cards(text) == app.model.result.start
 
 
 def test_tabs_present(app):
     tabs = [app.notebook.tab(t, "text") for t in app.notebook.tabs()]
-    assert tabs == ["Starting Order", "X to Y"]
+    assert tabs == ["Starting Order", "X to Y", "Free Tracking"]
 
 
 def test_x_to_y_tab_finds_shuffles(app):
@@ -250,7 +254,7 @@ def test_view_start_cards(app):
     viewer = app.viewers.get("start")
     assert images_on(viewer) == []
     app.load_preset()
-    app._add_step(ops.OUT_FARO)
+    app.sequence.add_step(ops.OUT_FARO)
     assert len(images_on(viewer)) == 52
 
 
@@ -272,12 +276,15 @@ def random_order(seed):
     return cards
 
 
-def test_x_to_y_depth_slider_warns_above_five(app):
+def test_x_to_y_depth_slider_warns_above_six(app):
     tab = app.x_to_y
     assert tab.depth_var.get() == 5 and "⚠" not in tab.depth_note.cget("text")
     tab.depth_var.set(6)
     tab._on_depth("6")
-    assert tab.model.depth == 6
+    assert tab.model.depth == 6 and "⚠" not in tab.depth_note.cget("text")
+    tab.depth_var.set(7)
+    tab._on_depth("7")
+    assert tab.model.depth == 7
     assert "⚠" in tab.depth_note.cget("text") and "minutes" in tab.depth_note.cget("text")
 
 
@@ -285,8 +292,8 @@ def test_x_to_y_cancel_long_search(app):
     tab = app.x_to_y
     tab.load_preset("start")
     tab.model.set_cards("end", random_order(5))
-    tab.depth_var.set(6)
-    tab._on_depth("6")
+    tab.depth_var.set(7)
+    tab._on_depth("7")
     tab.solve()
     assert tab.progress_row.winfo_manager() == "pack"
     tab.cancel_search()
@@ -300,8 +307,8 @@ def test_x_to_y_edit_during_search_cancels_it(app):
     tab = app.x_to_y
     tab.load_preset("start")
     tab.model.set_cards("end", random_order(6))
-    tab.depth_var.set(6)
-    tab._on_depth("6")
+    tab.depth_var.set(7)
+    tab._on_depth("7")
     tab.solve()
     job = tab._job
     tab.load_preset("end")  # a different ending order
@@ -383,8 +390,8 @@ def test_x_to_y_shows_best_so_far_and_keeps_it_on_cancel(app):
     tab = app.x_to_y
     tab.load_preset("start")
     tab.model.set_cards("end", random_order(7))
-    tab.depth_var.set(6)
-    tab._on_depth("6")
+    tab.depth_var.set(7)
+    tab._on_depth("7")
     tab.solve()
     end = time.monotonic() + 60
     while tab.model.outcome.status != "searching":
@@ -552,3 +559,226 @@ def test_damaged_download_is_deleted_and_not_run(root, tmp_path, dialogs, monkey
     assert ran == [] and checker.dialog is None
     assert not (tmp_path / "CardApp-Setup-99.0.0.exe").exists()
     assert dialogs and dialogs[0][0] == "askyesno" and "damaged" in dialogs[0][1]
+
+
+def test_add_and_edit_packet_run(app):
+    app.load_preset()
+    app.sequence.new_x_var.set("10")
+    app.sequence.new_y_var.set("")
+    app.sequence.add_step(ops.PACKET_RUN)
+    app.sequence.new_y_var.set("3")
+    app.sequence.add_step(ops.PACKET_RUN)
+    assert [s for s, _see in steps_shown(app)] == ["1. Packet Run: reverse top 10",
+                                                   "2. Packet Run: pick up 10, run 3"]
+    assert app.badge.cget("text") == "PASS"
+    app.sequence.select_step(0)
+    assert str(app.sequence.edit_y.cget("state")) == "normal" and app.sequence.edit_y_var.get() == ""
+    app.sequence.edit_y_var.set("4")
+    app.sequence.commit_edit_y()
+    assert app.model.steps[0] == solver.Step(ops.PACKET_RUN, 10, 4)
+    app.sequence.edit_y_var.set("11")
+    app.sequence.commit_edit_y()
+    assert "Invalid Y" in app.sequence.seq_error.cget("text")
+    app.sequence.new_y_var.set("12")
+    app.sequence.add_step(ops.PACKET_RUN)
+    assert "Can't add step" in app.sequence.seq_error.cget("text") and len(app.model.steps) == 2
+    app.sequence.add_step(ops.CUT)  # Y is ignored for other shuffles; goes after the selected step
+    assert app.model.steps[1] == solver.Step(ops.CUT, 10)
+    app.sequence.select_step(1)
+    assert str(app.sequence.edit_y.cget("state")) == "disabled"
+
+
+def shown(tab, side):
+    return tab.boxes[side].cget("text"), tab.views[side].get("1.0", "end-1c")
+
+
+def test_tracker_shows_whole_run_or_one_step(app):
+    tab = app.tracker
+    assert "Enter a deck" in shown(tab, "before")[1]
+    tab.preset_var.set("New deck order")
+    tab.load_preset()
+    tab.sequence.add_step(ops.OUT_FARO)
+    tab.sequence.new_x_var.set("10")
+    tab.sequence.add_step(ops.CUT)
+    states = tab.model.states
+    # A newly added step is selected, so the sides show its before and after.
+    assert shown(tab, "before") == ("Before #2: Cut 10", format_table(states[1]))
+    assert shown(tab, "after") == ("After #2: Cut 10", format_table(states[2]))
+    tab.sequence.select_step(0)
+    assert shown(tab, "before") == ("Before #1: Out-Faro", format_table(states[0]))
+    assert tab.shorthand("after") == deck.format_cards(list(states[1].pile("A").cards))
+    tab.show_whole_run()
+    assert shown(tab, "before") == ("Starting order", format_table(states[0]))
+    assert shown(tab, "after") == ("After all 2 steps", format_table(states[2]))
+    cards = states[0].pile("A").cards
+    see = f"{cards[25].pretty()} | {cards[26].pretty()}"  # the faro's split: both cards
+    t = tab.sequence.step_list
+    assert [t.set(row, "see") for row in t.get_children()][0] == see
+
+
+def test_tracker_typed_deck_and_card_viewer(app):
+    tab = app.tracker
+    tab.deck_text.insert("1.0", "A-KH, A-KC, K-AD, K-AS")
+    tab.frame.update()  # lets the box report the edit, starting the debounce
+    tab.sequence.add_step(ops.OUT_FARO)
+    tab.view_cards("after")  # applies the pending text first
+    assert tab.model.cards == deck.PRESETS["New deck order"]
+    assert tab._shown["after"] == tab.model.states[1]
+    tab.show_whole_run()
+    assert tab.viewers.get("after").win.title() == "After all 1 step"
+
+
+def test_tracker_view_buttons_stay_visible_in_a_small_window(root):
+    root.deiconify()
+    root.geometry("1200x700")
+    app = ShuffleSolverApp(root)
+    app.notebook.select(app.tracker.frame)
+    root.update()
+    for side in ("before", "after"):
+        frame = app.tracker.boxes[side]
+        buttons = [w for row in frame.winfo_children() for w in row.winfo_children()
+                   if isinstance(w, tb.Button)]
+        assert [b.cget("text") for b in buttons] == ["Copy shorthand", "View cards"]
+        for b in buttons:
+            assert b.winfo_ismapped()
+            assert b.winfo_rooty() + b.winfo_height() <= root.winfo_rooty() + root.winfo_height()
+
+
+def test_tracker_aces_example_with_card_and_packet_steps(app):
+    tab, seq = app.tracker, app.tracker.sequence
+    tab.deck_text.insert("1.0", "AC, AH, AS, AD, 2-KC, 2-KH, 2-KS, 2-KD")
+    tab.apply_text()
+    tab.sizes_var.set("1,1,1,1, 12 12 12 12")
+    assert tab.split()
+    assert tab.model.piles_at(1) == list("ABCDEFGH")
+    assert list(tab.place_pile_box["values"]) == list("ABCDEFGH")
+    for pile, onto in zip("EFGH", "ABCD"):
+        tab.place_pile_var.set(pile)
+        tab.place_onto_var.set(onto)
+        assert tab.place()
+    tab.gather_var.set("a b c d")
+    assert tab.gather()
+    assert [t.split(". ", 1)[1] for t in (seq.step_list.set(r, "step")
+                                           for r in seq.step_list.get_children())] == [
+        "Split pile A into 1, 1, 1, 1, 12, 12, 12, 12", "Put pile E on top of pile A",
+        "Put pile F on top of pile B", "Put pile G on top of pile C",
+        "Put pile H on top of pile D", "Gather piles A, B, C, D"]
+    assert tab.shorthand("after") == deck.format_cards(deck.parse_cards(
+        "2-KC, AC, 2-KH, AH, 2-KS, AS, 2-KD, AD"))
+    seq.select_step(0)
+    assert shown(tab, "after")[1].count("Pile ") == 8
+    assert len(tab._groups("after")) == 8
+    tab.view_cards("after")  # the grouped popup draws without trouble
+    assert "in 8 piles" in tab.viewers.get("after").summary.cget("text")
+
+
+def test_tracker_card_steps_and_the_odd_pile_rule(app):
+    tab, seq = app.tracker, app.tracker.sequence
+    tab.load_preset()
+    tab.cards_var.set("AS")
+    assert tab.take_out("discard")  # 51 cards left
+    assert "Odd number of cards (51): partial faros only." == seq.odd_note.cget("text")
+    assert [str(b.cget("state")) for b in seq.faro_buttons] == ["disabled", "disabled"]
+    assert tab.take_out("pile") is False  # they're gone now
+    assert "not on the table" in seq.seq_error.cget("text")
+    tab.add_pos_var.set("26")
+    assert tab.add_cards()
+    assert [str(b.cget("state")) for b in seq.faro_buttons] == ["normal", "normal"]
+    assert tab.model.states[-1].pile("A").cards[25] == deck.parse_cards("AS")[0]
+    seq.add_step(ops.OUT_FARO)
+    assert len(tab.model.steps) == 3
+    seq.select_step(0)  # now the faro is on 51 cards: refused, and the button is off
+    assert str(seq.faro_buttons[0].cget("state")) == "disabled"
+    seq.add_step(ops.OUT_FARO)
+    assert len(tab.model.steps) == 3 and "full faro needs an even" in seq.seq_error.cget("text")
+    seq.select_step(1)
+    seq._delete_step()  # the faro after it is now on 51 cards and can't be done
+    rows = [seq.step_list.set(r, "step") for r in seq.step_list.get_children()]
+    assert rows[1].startswith("⚠ 2. Out-Faro")
+    assert "Step 2 can't be done" in seq.seq_error.cget("text")
+    tab.show_whole_run()
+    assert shown(tab, "after")[1].startswith("Step 2 can't be done")
+
+
+def test_tracker_rearrange_dialog_adds_and_edits_a_step(app):
+    tab = app.tracker
+    tab.load_preset()
+    dialog = tab.open_rearrange()
+    assert dialog.text.get("1.0", "end-1c") == deck.format_cards(tab.model.cards)  # prefilled
+    dialog.title_var.set("Card revelations")
+    dialog.set_text("A-KH, A-KC | K-AD, K-AS`")
+    assert "26 cards" not in dialog.status.cget("text")
+    assert dialog.status.cget("text") == "✓ 52 cards in 2 piles"
+    assert dialog.ok() and tab.dialog is None
+    step = tab.model.steps[0]
+    assert step.label() == "Rearrange: Card revelations (2 piles)"
+    assert shown(tab, "after")[1].startswith("Pile A \u2014 26 cards")
+    assert tab.shorthand("after") == "A: A-KH, A-KC |\nB: K-AD, K-AS`"
+    dialog = tab.open_rearrange(0)  # edit it: prefilled with what was typed
+    assert dialog.title_var.get() == "Card revelations"
+    dialog.set_text("A-KH, A-KC, K-AD")  # 13 cards short
+    assert "missing" in dialog.status.cget("text") and dialog.ok() is False
+    dialog.set_text("A-KH, A-KC, K-AD, K-AS")  # back to one pile
+    assert dialog.ok()
+    assert len(tab.model.steps) == 1 and tab.model.states[1].names == ["A"]
+
+
+def test_tracker_groups_steps_by_range(app):
+    tab, seq = app.tracker, app.tracker.sequence
+    tab.load_preset()
+    for x in range(1, 6):
+        seq.new_x_var.set(str(x))
+        seq.add_step(ops.CUT)
+    seq.select_step(None)
+    assert tab.open_group_dialog() is None and "select the steps" in seq.seq_error.cget("text")
+    seq.select_range(1, 3)
+    assert seq.selected_range() == (1, 3) and seq.selected_step() is None
+    assert shown(tab, "before")[0] == "Before #2\u2013#4"
+    dialog = tab.open_group_dialog()
+    dialog.title_var.set("Trick 1")
+    dialog.color_var.set("Red")
+    assert dialog.ok()
+    t = seq.step_list
+    assert t.get_children() == ("s0", "g1", "s4")
+    assert t.get_children("g1") == ("s1", "s2", "s3")
+    assert t.set("g1", "step") == "Trick 1   (#2\u2013#4)"
+    assert str(t.tag_configure("g1", "background")) == theme.tint("Red", 0.55)
+    t.selection_set(["g1"])
+    tab.frame.update()
+    assert seq.selected_range() == (1, 3)
+    assert shown(tab, "after")[0] == "After Trick 1 (#2\u2013#4)"
+    seq.new_x_var.set("7")
+    seq.add_step(ops.CUT)  # goes after the group, outside it
+    assert t.get_children("g1") == ("s1", "s2", "s3") and seq.selected_step() == 4
+    t.item("g1", open=False)  # folded groups stay folded
+    seq.select_step(0)
+    seq.add_step(ops.OUT_FARO)  # before the group: its rows move down
+    assert t.get_children("g1") == ("s2", "s3", "s4") and not t.item("g1", "open")
+    t.selection_set(["g1"])
+    dialog = tab.open_group_dialog()  # a selected group is edited, not regrouped
+    assert dialog.title_var.get() == "Trick 1"
+    dialog.ungroup()
+    assert tab.model.groups == [] and t.get_children() == tuple(f"s{i}" for i in range(7))
+
+
+def test_open_puts_each_kind_of_file_in_its_tab(app, tmp_path):
+    tab = app.tracker
+    tab.load_preset()
+    tab.sequence.add_step(ops.OUT_FARO)
+    tab.sequence.select_range(0, 0)
+    tab.open_group_dialog().ok()
+    project = tmp_path / "project.json"
+    tab.model.save(project)
+    app.model.load_preset("New deck order")
+    setup = tmp_path / "setup.json"
+    app.model.save(setup)
+
+    fresh = ShuffleSolverApp(tk.Toplevel(app.root))
+    fresh.open_path(str(project))
+    assert fresh.notebook.select() == str(fresh.tracker.frame)
+    assert fresh.tracker.model.steps == tab.model.steps
+    assert fresh.tracker.sequence.step_list.get_children() == ("g1",)
+    assert fresh.tracker.deck_text.get("1.0", "end-1c") == deck.format_cards(tab.model.cards)
+    fresh.open_path(str(setup))
+    assert fresh.notebook.index(fresh.notebook.select()) == 0
+    assert fresh.model.slots == app.model.slots

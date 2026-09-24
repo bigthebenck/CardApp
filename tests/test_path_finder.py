@@ -166,3 +166,68 @@ def test_improved_not_called_without_slow_layers():
     end = simulate(NDO, [OUT, Step(ops.CUT, 10)])
     path_finder.find_path(NDO, end, depth=4, improved=seen.append)
     assert seen == []
+
+
+def test_depth_six_finds_shortest_route():
+    rng = random.Random(3)
+    seq = [rng.choice(path_finder.all_steps()) for _ in range(6)]
+    end = simulate(NDO, seq)
+    result = path_finder.find_path(NDO, end, depth=6)
+    assert keys(simulate(NDO, result.steps)) == keys(end)
+    assert result.shortest and len(result.steps) <= 6
+
+
+def distances(n):
+    """The fewest shuffles to reach every order of an n-card deck (breadth-first)."""
+    perms = [ops.permutation(s.kind, s.x, n) for s in path_finder.all_steps(n)]
+    start = tuple(range(n))
+    dist, layer = {start: 0}, [start]
+    while layer:
+        nxt = []
+        for order in layer:
+            for perm in perms:
+                new = [0] * n
+                for i, card in enumerate(order):
+                    new[perm[i]] = card
+                new = tuple(new)
+                if new not in dist:
+                    dist[new] = dist[order] + 1
+                    nxt.append(new)
+        layer = nxt
+    return dist
+
+
+@pytest.mark.parametrize("collide", [False, True])
+def test_small_deck_routes_are_shortest_at_every_depth(monkeypatch, collide):
+    # One stored layer per side sends even these short routes through the bulk
+    # matching, up to four forward layers deep. Keys of a single card make most
+    # decks share a key, so every match has to be checked on the whole deck.
+    monkeypatch.setattr(path_finder, "STORED_DEPTH", 1)
+    if collide:
+        monkeypatch.setattr(path_finder, "_sample", lambda n: [0])
+    cards = NDO[:8]
+    dist = distances(8)
+    for order in random.Random(8).sample(sorted(dist), 25):
+        end = [cards[i] for i in order]
+        for depth in range(1, path_finder.MAX_DEPTH + 1):
+            result = path_finder.find_path(cards, end, depth=depth)
+            assert keys(simulate(cards, result.steps)) == keys(end)
+            if dist[order] <= depth:
+                assert result.shortest and len(result.steps) == dist[order]
+            else:
+                assert not result.shortest
+
+
+def test_search_uses_packet_run_reversals():
+    steps = path_finder.all_steps()
+    assert Step(ops.PACKET_RUN, 12) in steps
+    assert not any(s.kind == ops.PACKET_RUN and s.y is not None for s in steps)
+    end = simulate(NDO, [Step(ops.PACKET_RUN, 12)])
+    result = path_finder.find_path(NDO, end, depth=2)
+    assert result.steps == [Step(ops.PACKET_RUN, 12)] and result.shortest
+
+
+def test_packet_run_with_y_reached_in_a_few_shuffles():
+    end = simulate(NDO, [Step(ops.PACKET_RUN, 20, 7)])
+    result = path_finder.find_path(NDO, end, depth=3)
+    assert keys(simulate(NDO, result.steps)) == keys(end)

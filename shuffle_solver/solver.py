@@ -15,6 +15,7 @@ _LABELS = {
     ops.OUT_FARO: "Out-Faro",
     ops.IN_FARO: "In-Faro",
     ops.OVERHAND_RUN: "Overhand Run",
+    ops.PACKET_RUN: "Packet Run",
     ops.CUT: "Cut",
     **{kind: "Partial Out-Faro" if out else "Partial In-Faro"
        for kind, (_src, _dest, out) in ops.PARTIAL_FAROS.items()},
@@ -23,10 +24,15 @@ _LABELS = {
 
 @dataclass(frozen=True)
 class Step:
-    """One shuffle in the sequence. ``x`` is used by overhand runs and cuts only."""
+    """One shuffle in the sequence.
+
+    ``x`` is used by overhand runs, packet runs, cuts and partial faros; ``y``
+    only by packet runs (cards run, None for all of them).
+    """
 
     kind: str
     x: int | None = None
+    y: int | None = None
 
     def validate(self, n=ops.DECK_SIZE):
         if self.kind not in ops.SHUFFLE_KINDS:
@@ -37,10 +43,19 @@ class Step:
             raise ValueError(f"{_LABELS[self.kind]} does not take an X value")
         else:
             ops.permutation(self.kind, None, n)  # surfaces odd-deck faro errors
+        ops.check_y(self.kind, self.x, self.y, n)
+
+    def permutation(self, n=ops.DECK_SIZE):
+        """``perm[i]`` is where position i goes."""
+        return ops.permutation(self.kind, self.x, n, self.y)
 
     def label(self):
         if self.kind == ops.OVERHAND_RUN:
             return f"Overhand Run of {self.x}"
+        if self.kind == ops.PACKET_RUN:
+            if self.y is None or self.y == self.x:
+                return f"Packet Run: reverse top {self.x}"
+            return f"Packet Run: pick up {self.x}, run {self.y}"
         if self.kind == ops.CUT:
             return f"Cut {self.x}"
         if self.kind in ops.PARTIAL_FAROS:
@@ -61,7 +76,7 @@ def validate_steps(steps, n=ops.DECK_SIZE):
 def final_position(m, steps, n=ops.DECK_SIZE):
     """Pi(m): walk a starting position forward through every step in order."""
     for step in steps:
-        m = ops.apply(step.kind, m, step.x, n)
+        m = ops.apply(step.kind, m, step.x, n, step.y)
     return m
 
 
@@ -74,7 +89,7 @@ def composed_positions(steps, n=ops.DECK_SIZE):
 def apply_step(deck, step):
     """Forward-simulate a single shuffle on an actual deck (list of anything)."""
     n = len(deck)
-    perm = ops.permutation(step.kind, step.x, n)
+    perm = step.permutation(n)
     out = [None] * n
     for i, card in enumerate(deck):
         out[perm[i]] = card

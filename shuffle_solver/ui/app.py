@@ -1,22 +1,25 @@
-"""Tkinter window with two tabs.
+"""Tkinter window with three tabs.
 
 The first tab holds the Final Deck, Shuffle Sequence and Result panels; the
-second ("X to Y") finds shuffles from one order to another. All state lives in
-``AppModel`` and ``XToYModel``; this module only draws it and forwards user
-edits. It contains no shuffle math.
+second ("X to Y") finds shuffles from one order to another; the third ("Free
+Tracking") follows a deck through shuffles you pick. All state lives in
+``AppModel``, ``XToYModel`` and ``TrackerModel``; this module only draws it and
+forwards user edits. It contains no shuffle math.
 """
 
+import json
 import tkinter as tk
 from tkinter import filedialog, messagebox
 
 import ttkbootstrap as tb
 
-from .. import deck, solver, updater
+from .. import deck, updater
 from .. import shuffle_ops as ops
 from . import theme
 from .card_viewer import CardViewers
-from .model import (DECK_SIZE, AppModel, format_instructions, format_preview, format_splits,
-                    split_cards)
+from .model import DECK_SIZE, TRACKER_FILE_TYPE, AppModel, format_instructions, format_preview
+from .sequence_panel import SequencePanel
+from .tracker import TrackerTab
 from .update_dialog import UpdateChecker
 from .x_to_y import XToYTab
 
@@ -26,16 +29,9 @@ MONO = ("Courier", 10)
 
 ALL_CARD_LABELS = [deck.Card(r, s).pretty() for s in deck.SUITS for r in deck.RANKS]
 
-# Partial faro packet choices: label -> (cut from, woven into)
-PARTIAL_DIRECTIONS = {
-    "top into top": (ops.TOP, ops.TOP),
-    "top into bottom": (ops.TOP, ops.BOTTOM),
-    "bottom into top": (ops.BOTTOM, ops.TOP),
-    "bottom into bottom": (ops.BOTTOM, ops.BOTTOM),
-}
-
 SOLVER_TAB_TITLE = "Starting Order"
 X_TO_Y_TAB_TITLE = "X to Y"
+TRACKER_TAB_TITLE = "Free Tracking"
 
 BADGES = {  # status -> (text, bootstyle)
     "ok": ("PASS", "success"),
@@ -47,8 +43,8 @@ BADGES = {  # status -> (text, bootstyle)
 
 
 class ShuffleSolverApp:
-    def __init__(self, root, model=None, x_to_y_model=None, settings_path=None,
-                 check_updates=False):
+    def __init__(self, root, model=None, x_to_y_model=None, tracker_model=None,
+                 settings_path=None, check_updates=False):
         self.root = root
         self.model = model or AppModel()
         self._text_job = None
@@ -70,10 +66,14 @@ class ShuffleSolverApp:
         panes = tb.Panedwindow(self.notebook, orient=tk.HORIZONTAL)
         self.notebook.add(panes, text=SOLVER_TAB_TITLE)
         panes.add(self._build_final_panel(panes), weight=2)
-        panes.add(self._build_sequence_panel(panes), weight=1)
+        self.sequence = SequencePanel(panes, self.model,
+                                      "2. Shuffle sequence (first → last)", self._states)
+        panes.add(self.sequence.frame, weight=1)
         panes.add(self._build_result_panel(panes), weight=2)
         self.x_to_y = XToYTab(self.notebook, x_to_y_model)
         self.notebook.add(self.x_to_y.frame, text=X_TO_Y_TAB_TITLE)
+        self.tracker = TrackerTab(self.notebook, tracker_model)
+        self.notebook.add(self.tracker.frame, text=TRACKER_TAB_TITLE)
 
         self.model.subscribe(lambda _m: self.refresh())
         self.refresh()
@@ -85,8 +85,9 @@ class ShuffleSolverApp:
     def _build_menu(self):
         menubar = tb.Menu(self.root)
         filemenu = tb.Menu(menubar, tearoff=False)
-        filemenu.add_command(label="Open setup…", command=self.open_setup, accelerator="Ctrl+O")
-        filemenu.add_command(label="Save setup…", command=self.save_setup, accelerator="Ctrl+S")
+        filemenu.add_command(label="Open…", command=self.open_file, accelerator="Ctrl+O")
+        filemenu.add_command(label="Save setup…", command=self.save_setup)
+        filemenu.add_command(label="Save tracking project…", command=self.save_tracker)
         filemenu.add_separator()
         filemenu.add_command(label="Export starting order…", command=self.export_start)
         filemenu.add_separator()
@@ -113,8 +114,8 @@ class ShuffleSolverApp:
                                  command=self.toggle_update_check)
         menubar.add_cascade(label="Help", menu=helpmenu)
         self.root.config(menu=menubar)
-        self.root.bind("<Control-o>", lambda e: self.open_setup())
-        self.root.bind("<Control-s>", lambda e: self.save_setup())
+        self.root.bind("<Control-o>", lambda e: self.open_file())
+        self.root.bind("<Control-s>", lambda e: self.save_current())
         self.root.bind("<Control-d>", lambda e: self.toggle_dark())
 
     def _build_final_panel(self, parent):
@@ -160,90 +161,6 @@ class ShuffleSolverApp:
 
         self.deck_status = tb.Label(frame, text="", wraplength=420, justify=tk.LEFT)
         self.deck_status.pack(anchor=tk.W, pady=(6, 0))
-        return frame
-
-    def _build_sequence_panel(self, parent):
-        frame = tb.LabelFrame(parent, text="2. Shuffle sequence (first \u2192 last)",
-                              padding=6)
-
-        add = tb.Frame(frame)
-        add.pack(fill=tk.X)
-        tb.Button(add, text="+ Out-Faro",
-                  command=lambda: self._add_step(ops.OUT_FARO)).grid(row=0, column=0, sticky=tk.EW)
-        tb.Button(add, text="+ In-Faro",
-                  command=lambda: self._add_step(ops.IN_FARO)).grid(row=0, column=1, sticky=tk.EW)
-        tb.Button(add, text="+ Overhand Run",
-                  command=lambda: self._add_step(ops.OVERHAND_RUN)).grid(row=1, column=0,
-                                                                         sticky=tk.EW)
-        tb.Button(add, text="+ Cut",
-                  command=lambda: self._add_step(ops.CUT)).grid(row=1, column=1, sticky=tk.EW)
-        tb.Button(add, text="+ Partial Out-Faro",
-                  command=lambda: self._add_step(self._partial_kind(True))).grid(
-            row=2, column=0, sticky=tk.EW)
-        tb.Button(add, text="+ Partial In-Faro",
-                  command=lambda: self._add_step(self._partial_kind(False))).grid(
-            row=2, column=1, sticky=tk.EW)
-        packet = tb.Frame(add)
-        packet.grid(row=3, column=0, columnspan=2, sticky=tk.EW, pady=(2, 0))
-        tb.Label(packet, text="Partial faro packet:").pack(side=tk.LEFT)
-        self.partial_dir_var = tk.StringVar(value=next(iter(PARTIAL_DIRECTIONS)))
-        tb.Combobox(packet, textvariable=self.partial_dir_var, values=list(PARTIAL_DIRECTIONS),
-                    state="readonly", width=18).pack(side=tk.LEFT, padx=4)
-        tb.Label(add, text="X:").grid(row=1, column=2, rowspan=2, padx=(8, 2))
-        self.new_x_var = tk.StringVar(value="5")
-        tb.Spinbox(add, from_=1, to=DECK_SIZE, width=4,
-                   textvariable=self.new_x_var).grid(row=1, column=3, rowspan=2)
-        add.columnconfigure(0, weight=1)
-        add.columnconfigure(1, weight=1)
-
-        body = tb.Frame(frame)
-        body.pack(fill=tk.BOTH, expand=True, pady=6)
-        # Buttons and scrollbar are packed first so a narrow pane squeezes the list, not them.
-        buttons = tb.Frame(body)
-        buttons.pack(side=tk.RIGHT, fill=tk.Y, padx=(6, 0))
-        for text, cmd in (("↑ Up", lambda: self._move_step(-1)),
-                          ("↓ Down", lambda: self._move_step(1)),
-                          ("Duplicate", self._duplicate_step),
-                          ("Delete", self._delete_step),
-                          ("Clear all", self.model.clear_steps)):
-            tb.Button(buttons, text=text, command=cmd).pack(fill=tk.X, pady=1)
-
-        # Two columns so the card seen at a faro's split stays visible in a narrow pane.
-        self.step_list = tb.Treeview(body, columns=("step", "see"), show="headings",
-                                     selectmode="browse", height=10)
-        self.step_list.heading("step", text="Shuffle", anchor=tk.W)
-        self.step_list.heading("see", text="You see", anchor=tk.CENTER)
-        self.step_list.column("step", width=250, stretch=True, anchor=tk.W)
-        self.step_list.column("see", width=64, stretch=False, anchor=tk.CENTER)
-        sb = tb.Scrollbar(body, orient=tk.VERTICAL, command=self.step_list.yview)
-        sb.pack(side=tk.RIGHT, fill=tk.Y)
-        self.step_list.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        self.step_list.bind("<<TreeviewSelect>>", lambda e: self._on_step_select())
-        self.step_list.bind("<Delete>", lambda e: self._delete_step())
-        self.step_list.config(yscrollcommand=sb.set)
-
-        # Where each faro splits the deck, once there is a starting order to split.
-        self.split_label = tb.Label(frame, text="", font=MONO, justify=tk.LEFT, wraplength=320)
-        self.split_label.pack(anchor=tk.W, pady=(0, 6))
-
-        edit = tb.Frame(frame)
-        edit.pack(fill=tk.X)
-        tb.Label(edit, text="Selected step X:").pack(side=tk.LEFT)
-        self.edit_x_var = tk.StringVar()
-        self.edit_x = tb.Spinbox(edit, from_=1, to=DECK_SIZE, width=4,
-                                 textvariable=self.edit_x_var, command=self._commit_edit_x)
-        self.edit_x.pack(side=tk.LEFT, padx=4)
-        self.edit_x.bind("<Return>", lambda e: self._commit_edit_x())
-        self.edit_x.bind("<FocusOut>", lambda e: self._commit_edit_x())
-        self.seq_error = tb.Label(frame, text="", bootstyle="danger", wraplength=320)
-        self.seq_error.pack(anchor=tk.W, pady=(4, 0))
-        tb.Label(frame, text="Overhand run: X = 1–52 (52 reverses the deck). "
-                              "Cut: X = 1–51. Partial faro: cut off X cards (up to 26) from "
-                              "the top or bottom and weave them into the top or bottom of "
-                              "the rest. Out keeps the packet's outer card on the outside "
-                              "(its top card on top, or its bottom card on the bottom); in "
-                              "tucks it one card inside.", style="Muted.TLabel",
-                  wraplength=260).pack(anchor=tk.W)
         return frame
 
     def _build_result_panel(self, parent):
@@ -334,81 +251,6 @@ class ShuffleSolverApp:
         self.model.set_slot(index, cards[0])
         self.refresh()  # normalise the slot's text even when nothing changed
 
-    # --- sequence events ------------------------------------------------------------------
-
-    def _partial_kind(self, out):
-        source, dest = PARTIAL_DIRECTIONS[self.partial_dir_var.get()]
-        return ops.partial_faro_kind(source, dest, out)
-
-    def _selected_step(self):
-        sel = self.step_list.selection()
-        return self.step_list.index(sel[0]) if sel else None
-
-    def _select_step(self, index):
-        rows = self.step_list.get_children()
-        if index is not None and 0 <= index < len(rows):
-            self.step_list.selection_set(rows[index])
-            self.step_list.focus(rows[index])
-            self.step_list.see(rows[index])
-        else:
-            self.step_list.selection_set(())
-        self._on_step_select()
-
-    def _add_step(self, kind):
-        x = None
-        if kind in ops.KINDS_WITH_X:
-            try:
-                x = int(self.new_x_var.get())
-                solver.Step(kind, x).validate(DECK_SIZE)
-            except (ValueError, TypeError) as exc:
-                self.seq_error.config(text=f"Can't add step: {exc}")
-                return
-        self.seq_error.config(text="")
-        sel = self._selected_step()
-        index = len(self.model.steps) if sel is None else sel + 1
-        self.model.add_step(solver.Step(kind, x), index)
-        self._select_step(index)
-
-    def _move_step(self, delta):
-        sel = self._selected_step()
-        if sel is not None:
-            self._select_step(self.model.move_step(sel, delta))
-
-    def _duplicate_step(self):
-        sel = self._selected_step()
-        if sel is not None:
-            self.model.duplicate_step(sel)
-            self._select_step(sel + 1)
-
-    def _delete_step(self):
-        sel = self._selected_step()
-        if sel is not None:
-            self.model.remove_step(sel)
-            self._select_step(min(sel, len(self.model.steps) - 1))
-
-    def _on_step_select(self):
-        sel = self._selected_step()
-        step = self.model.steps[sel] if sel is not None else None
-        if step is not None and step.kind in ops.KINDS_WITH_X:
-            lo, hi = ops.x_bounds(step.kind)
-            self.edit_x.configure(state=tk.NORMAL, from_=lo, to=hi)
-            self.edit_x_var.set(str(step.x))
-        else:
-            self.edit_x_var.set("")
-            self.edit_x.configure(state=tk.DISABLED)
-
-    def _commit_edit_x(self):
-        sel = self._selected_step()
-        if sel is None or self.model.steps[sel].kind not in ops.KINDS_WITH_X:
-            return
-        try:
-            self.model.set_step_x(sel, int(self.edit_x_var.get()))
-            self.seq_error.config(text="")
-        except (ValueError, TypeError) as exc:
-            self.seq_error.config(text=f"Invalid X: {exc}")
-            return
-        self._select_step(sel)
-
     # --- refresh from model -----------------------------------------------------------------
 
     def refresh(self):
@@ -440,19 +282,7 @@ class ShuffleSolverApp:
         else:
             self.deck_status.config(text="\n".join(report.messages()), bootstyle="danger")
 
-        sel = self._selected_step()
-        self.step_list.delete(*self.step_list.get_children())
-        for k, step in enumerate(m.steps, 1):
-            cards = split_cards(step, m.result.states[k - 1]) if m.result.has_answer else None
-            self.step_list.insert("", tk.END, values=(f"{k}. {step.label()}",
-                                                      cards[0].pretty() if cards else ""))
-        self.split_label.config(text=format_splits(m.steps, m.result.states)
-                                if m.result.has_answer else "")
-        rows = self.step_list.get_children()
-        if sel is not None and sel < len(rows):
-            self.step_list.selection_set(rows[sel])
-            self.step_list.focus(rows[sel])
-        self._on_step_select()
+        self.sequence.refresh()
 
         res = m.result
         text, style = BADGES[res.status]
@@ -461,6 +291,10 @@ class ShuffleSolverApp:
         self._set_text(self.start_text, self._start_numbered() if res.has_answer else "")
         self._render_preview()
         self.viewers.refresh()
+
+    def _states(self):
+        res = self.model.result
+        return res.states if res.has_answer else None
 
     def _toggle_preview(self):
         if self.preview_var.get():
@@ -584,16 +418,41 @@ class ShuffleSolverApp:
         else:
             messagebox.showinfo(title, f"Saved to {path}", parent=self.root)
 
-    def open_setup(self):
+    def save_tracker(self):
+        """Save the whole Free Tracking tab: deck, steps, groups and shuffle pile."""
+        self.tracker.apply_text()  # include what was just typed in the deck box
+        path = filedialog.asksaveasfilename(parent=self.root, defaultextension=".json",
+                                            filetypes=[("Tracking project", "*.json")])
+        if path:
+            self._write_file("Save tracking project", path, lambda: self.tracker.model.save(path))
+
+    def save_current(self):
+        """Ctrl+S: save the tab in view (the Free Tracking tab, else the setup)."""
+        if self.notebook.select() == str(self.tracker.frame):
+            self.save_tracker()
+        else:
+            self.save_setup()
+
+    def open_file(self):
+        """Open a setup or a tracking project, into the tab it belongs to."""
         path = filedialog.askopenfilename(parent=self.root,
-                                          filetypes=[("Shuffle setup", "*.json"),
+                                          filetypes=[("Setup or tracking project", "*.json"),
                                                      ("All files", "*")])
-        if not path:
-            return
+        if path:
+            self.open_path(path)
+
+    def open_path(self, path):
         try:
-            self.model.load(path)
-        except (OSError, ValueError, KeyError, TypeError) as exc:
-            messagebox.showerror("Open setup", f"Could not load {path}:\n{exc}")
+            with open(path, encoding="utf-8") as fh:
+                data = json.load(fh)
+            if data.get("type") == TRACKER_FILE_TYPE:
+                self.tracker.model.load_dict(data)
+                self.notebook.select(self.tracker.frame)
+            else:
+                self.model.load_dict(data)
+                self.notebook.select(0)
+        except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
+            messagebox.showerror("Open", f"Could not load {path}:\n{exc}", parent=self.root)
 
     # --- theme ---------------------------------------------------------------------------------
 

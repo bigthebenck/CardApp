@@ -11,6 +11,7 @@ DECK_SIZE = 52
 OUT_FARO = "out_faro"
 IN_FARO = "in_faro"
 OVERHAND_RUN = "overhand_run"
+PACKET_RUN = "packet_run"  # overhand run inside the top X cards
 CUT = "cut"
 PARTIAL_OUT_FARO = "partial_out_faro"  # top packet into the top of the rest
 PARTIAL_IN_FARO = "partial_in_faro"
@@ -40,11 +41,13 @@ def partial_faro_kind(source, dest, out):
     return next(k for k, v in PARTIAL_FAROS.items() if v == (source, dest, out))
 
 
-SHUFFLE_KINDS = (OUT_FARO, IN_FARO, OVERHAND_RUN, CUT, *PARTIAL_FAROS)
-KINDS_WITH_X = (OVERHAND_RUN, CUT, *PARTIAL_FAROS)
+SHUFFLE_KINDS = (OUT_FARO, IN_FARO, OVERHAND_RUN, PACKET_RUN, CUT, *PARTIAL_FAROS)
+KINDS_WITH_X = (OVERHAND_RUN, PACKET_RUN, CUT, *PARTIAL_FAROS)
+KINDS_WITH_Y = (PACKET_RUN,)
 
 _X_NAMES = {
     OVERHAND_RUN: "overhand run",
+    PACKET_RUN: "packet run",
     CUT: "cut",
     **{kind: f"partial {'out' if out else 'in'}-faro"
        + ("" if (source, dest) == (TOP, TOP) else f" ({source} into {dest})")
@@ -69,6 +72,7 @@ def x_bounds(kind, n=DECK_SIZE):
 
     Overhand run: 1..n. X = 0 peels nothing (a no-op); X = n peels every card,
     which reverses the deck and is a genuine, useful step.
+    Packet run: 2..n. A packet of 1 card has nothing to rearrange.
     Cut: 1..n-1. Both X = 0 and X = n leave the deck unchanged.
     Partial faros: X is the packet cut off, which must fit into the rest
     (X <= n/2). An out-faro of 1 packet card woven in at the end it came from
@@ -76,6 +80,8 @@ def x_bounds(kind, n=DECK_SIZE):
     """
     if kind == OVERHAND_RUN:
         return 1, n
+    if kind == PACKET_RUN:
+        return 2, n
     if kind == CUT:
         return 1, n - 1
     if kind in PARTIAL_FAROS:
@@ -91,6 +97,25 @@ def check_x(kind, x, n=DECK_SIZE):
     lo, hi = x_bounds(kind, n)
     if not lo <= x <= hi:
         raise ValueError(f"{_X_NAMES[kind]} X must be between {lo} and {hi}, got {x}")
+
+
+def check_y(kind, x, y, n=DECK_SIZE):
+    """Raise ValueError unless ``y`` is a valid Y for ``kind`` with this X.
+
+    Only a packet run takes one: the number of cards run, 1..X, or None to run
+    them all (the same as Y = X).
+    """
+    if kind not in KINDS_WITH_Y:
+        if y is not None:
+            raise ValueError(f"{_X_NAMES.get(kind, kind)} does not take a Y value")
+        return
+    check_x(kind, x, n)
+    if y is None:
+        return
+    if isinstance(y, bool) or not isinstance(y, int):
+        raise TypeError(f"Y must be an int, got {y!r}")
+    if not 1 <= y <= x:
+        raise ValueError(f"{_X_NAMES[kind]} Y must be between 1 and X ({x}), got {y}")
 
 
 def out_faro(i, n=DECK_SIZE):
@@ -118,6 +143,22 @@ def overhand_run(i, x, n=DECK_SIZE):
     check_x(OVERHAND_RUN, x, n)
     _check_position(i, n)
     return i - x if i >= x else n - 1 - i
+
+
+def packet_run(i, x, y=None, n=DECK_SIZE):
+    """Pick up the top X cards, run Y of them singly onto the deck, drop the rest on top.
+
+    The run cards land reversed on top of the cards left on the table, and the
+    X - Y still in hand go on top of them in their original order. Running all
+    X (Y None or X) reverses the top X cards in place. The rest of the deck is
+    untouched. It is an overhand run of Y done on just the top X cards.
+    """
+    check_y(PACKET_RUN, x, y, n)
+    _check_position(i, n)
+    if i >= x:
+        return i
+    y = x if y is None else y
+    return i - y if i >= y else x - 1 - i
 
 
 def cut(i, x, n=DECK_SIZE):
@@ -170,7 +211,7 @@ def partial_in_faro(i, x, n=DECK_SIZE):
     return partial_faro(PARTIAL_IN_FARO, i, x, n)
 
 
-def apply(kind, i, x=None, n=DECK_SIZE):
+def apply(kind, i, x=None, n=DECK_SIZE, y=None):
     """Dispatch to the position function for ``kind``."""
     if kind == OUT_FARO:
         return out_faro(i, n)
@@ -178,6 +219,8 @@ def apply(kind, i, x=None, n=DECK_SIZE):
         return in_faro(i, n)
     if kind == OVERHAND_RUN:
         return overhand_run(i, x, n)
+    if kind == PACKET_RUN:
+        return packet_run(i, x, y, n)
     if kind == CUT:
         return cut(i, x, n)
     if kind in PARTIAL_FAROS:
@@ -186,12 +229,20 @@ def apply(kind, i, x=None, n=DECK_SIZE):
 
 
 def split_point(kind, x=None, n=DECK_SIZE):
-    """For a faro, how many cards are above the split (the upper packet); else None.
+    """How many cards are above the split (the upper packet); None if there is no split.
 
     A full faro splits at n/2. A partial faro splits off its packet: below the
     top X cards when the packet comes from the top, above the bottom X when it
-    comes from the bottom.
+    comes from the bottom. A cut splits below the top X cards, and so does a
+    packet run, which picks them up -- unless X is the whole deck, when there
+    is nothing to split off.
     """
+    if kind == CUT:
+        check_x(kind, x, n)
+        return x
+    if kind == PACKET_RUN:
+        check_x(kind, x, n)
+        return x if x < n else None
     if kind in (OUT_FARO, IN_FARO):
         _check_faro_deck(n)
         return n // 2
@@ -201,6 +252,6 @@ def split_point(kind, x=None, n=DECK_SIZE):
     return None
 
 
-def permutation(kind, x=None, n=DECK_SIZE):
+def permutation(kind, x=None, n=DECK_SIZE, y=None):
     """The whole shuffle as a list: ``perm[i]`` is where position i goes."""
-    return [apply(kind, i, x, n) for i in range(n)]
+    return [apply(kind, i, x, n, y) for i in range(n)]

@@ -54,6 +54,24 @@ def _mix(color, base, amount):
     return "#" + "".join(f"{round(x * amount + y * (1 - amount)):02x}" for x, y in zip(a, b))
 
 
+# Colours a user can give a group of steps. They are the user's choice, not part of
+# the theme, so they are shown through ``tint`` to stay readable in every theme.
+GROUP_COLORS = {
+    "Red": "#d9534f",
+    "Orange": "#f0883e",
+    "Yellow": "#e3b505",
+    "Green": "#4caf50",
+    "Blue": "#3b82f6",
+    "Purple": "#9b59b6",
+    "Gray": "#8a8a8a",
+}
+
+
+def tint(color, amount):
+    """``color`` ("#rrggbb" or a GROUP_COLORS name) blended into the theme's background."""
+    return _mix(GROUP_COLORS.get(color, color), tb.Style().colors.bg, amount)
+
+
 def _configure_custom_styles(style):
     # Dimmed hint text (Muted), and tinted fields for a duplicated card (Dup) and an
     # unreadable entry (Bad). A theme switch rebuilds every style, so these are redone

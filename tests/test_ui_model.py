@@ -1,10 +1,11 @@
 import pytest
 
-from shuffle_solver import deck
+from shuffle_solver import deck, tracking
 from shuffle_solver import shuffle_ops as ops
 from shuffle_solver.solver import Step, simulate
-from shuffle_solver.ui.model import (AppModel, PathOutcome, XToYModel, cancelled_outcome,
-                                     format_instructions, format_preview, search_outcome)
+from shuffle_solver.ui.model import (AppModel, PathOutcome, TrackerModel, XToYModel,
+                                     cancelled_outcome, format_columns, format_instructions,
+                                     format_preview, format_table, search_outcome)
 
 NDO = deck.PRESETS["New deck order"]
 
@@ -238,16 +239,19 @@ def test_format_instructions():
     assert format_instructions([Step(ops.IN_FARO), Step(ops.CUT, 3)]) == " 1. In-Faro\n 2. Cut 3"
 
 
-def test_split_cards_for_faros():
+def test_split_cards():
     from shuffle_solver.ui.model import split_cards, split_note
 
     names = lambda pair: tuple(c.key for c in pair)  # noqa: E731
     assert names(split_cards(Step(ops.OUT_FARO), NDO)) == ("KC", "KD")
     assert names(split_cards(Step(ops.PARTIAL_IN_FARO, 18), NDO)) == ("5C", "6C")
     assert names(split_cards(Step(ops.PARTIAL_OUT_FARO_BOTTOM_TOP, 9), NDO)) == ("TS", "9S")
-    assert split_cards(Step(ops.CUT, 5), NDO) is None
+    assert names(split_cards(Step(ops.CUT, 5), NDO)) == ("5H", "6H")
+    assert names(split_cards(Step(ops.PACKET_RUN, 3, 2), NDO)) == ("3H", "4H")
+    assert split_cards(Step(ops.OVERHAND_RUN, 5), NDO) is None
     assert split_note(Step(ops.IN_FARO), NDO) == "split K♣|K♦"
-    assert split_note(Step(ops.CUT, 5), NDO) == ""
+    assert split_note(Step(ops.CUT, 5), NDO) == "split 5♥|6♥"
+    assert split_note(Step(ops.OVERHAND_RUN, 5), NDO) == ""
 
 
 def test_format_instructions_with_splits():
@@ -255,7 +259,7 @@ def test_format_instructions_with_splits():
     states = [NDO] + [simulate(NDO, steps[:k]) for k in (1, 2, 3)]
     lines = format_instructions(steps, states).splitlines()
     assert lines[0] == " 1. Out-Faro  (split K♣|K♦)"
-    assert lines[1] == " 2. Cut 3"
+    assert lines[1] == f" 2. Cut 3  (split {states[1][2].pretty()}|{states[1][3].pretty()})"
     top, rest = states[2][25].pretty(), states[2][26].pretty()
     assert lines[2] == f" 3. Out-Faro  (split {top}|{rest})"
 
@@ -267,8 +271,9 @@ def test_format_splits():
     states = [NDO, simulate(NDO, steps[:1]), simulate(NDO, steps)]
     after_cut = states[1]
     lines = format_splits(steps, states).splitlines()
-    assert lines[1:] == [f"#2  {after_cut[42].pretty():>4} | {after_cut[43].pretty()}"]
-    assert format_splits([Step(ops.CUT, 3)], states[:2]) == ""
+    assert lines[1:] == ["#1    3♥ | 4♥",
+                         f"#2  {after_cut[42].pretty():>4} | {after_cut[43].pretty()}"]
+    assert format_splits([Step(ops.OVERHAND_RUN, 3)], states[:2]) == ""
 
 
 def test_search_outcome_reports_best_so_far():
@@ -293,5 +298,221 @@ def test_step_line():
     from shuffle_solver.ui.model import step_line
 
     assert step_line(2, Step(ops.OUT_FARO), NDO) == " 2. Out-Faro  (split K♣|K♦)"
-    assert step_line(3, Step(ops.CUT, 4), NDO) == " 3. Cut 4"
+    assert step_line(3, Step(ops.CUT, 4), NDO) == " 3. Cut 4  (split 4♥|5♥)"
+    assert step_line(4, Step(ops.OVERHAND_RUN, 4), NDO) == " 4. Overhand Run of 4"
     assert step_line(4, Step(ops.OUT_FARO)) == " 4. Out-Faro"
+
+
+def test_packet_run_step_y_editing_and_save(tmp_path, model):
+    model.add_step(Step(ops.PACKET_RUN, 10, 4))
+    assert model.steps[0].label() == "Packet Run: pick up 10, run 4"
+    model.set_step_x(0, 6)  # still leaves cards in hand, so Y is kept
+    assert model.steps[0] == Step(ops.PACKET_RUN, 6, 4)
+    model.set_step_x(0, 3)  # Y no longer fits: run them all
+    assert model.steps[0] == Step(ops.PACKET_RUN, 3)
+    assert model.steps[0].label() == "Packet Run: reverse top 3"
+    model.set_step_x(0, 9)
+    model.set_step_y(0, 2)
+    assert model.steps[0] == Step(ops.PACKET_RUN, 9, 2)
+    model.set_step_y(0, 9)  # running all of them is stored as no Y
+    assert model.steps[0] == Step(ops.PACKET_RUN, 9)
+    with pytest.raises(ValueError):
+        model.set_step_y(0, 10)
+    model.set_step_y(0, 5)
+    path = tmp_path / "setup.json"
+    model.save(path)
+    other = AppModel()
+    other.load(path)
+    assert other.steps == [Step(ops.PACKET_RUN, 9, 5)]
+    assert other.result.start == model.result.start
+
+
+# --- free tracking -----------------------------------------------------------------------
+
+
+def test_tracker_follows_the_deck_through_each_step():
+    m = TrackerModel()
+    m.load_preset("New deck order")
+    m.add_step(Step(ops.OUT_FARO))
+    m.add_step(Step(ops.CUT, 10))
+    decks = [list(t.pile("A").cards) for t in m.states]
+    assert decks == [NDO, simulate(NDO, [Step(ops.OUT_FARO)]),
+                     simulate(NDO, [Step(ops.OUT_FARO), Step(ops.CUT, 10)])]
+    assert m.steps == [tracking.Shuffle(Step(ops.OUT_FARO)), tracking.Shuffle(Step(ops.CUT, 10))]
+    assert m.around() == ("Starting order", m.states[0], "After all 2 steps", m.states[2])
+    assert m.around(1) == ("Before #2: Cut 10", m.states[1], "After #2: Cut 10", m.states[2])
+    assert m.step_decks() == decks[:2]
+    m.move_step(1, -1)  # edits recompute every state
+    assert list(m.states[-1].pile("A").cards) == simulate(
+        NDO, [Step(ops.CUT, 10), Step(ops.OUT_FARO)])
+
+
+def test_tracker_takes_any_deck_without_duplicates():
+    m = TrackerModel()
+    m.add_step(Step(ops.OUT_FARO))
+    assert m.states is None and m.deck_problems() == ["No cards yet."]
+    assert m.around(0) == ("Before #1: Out-Faro", None, "After #1: Out-Faro", None)
+    assert "Enter a deck" in m.missing_reason()
+    m.set_from_text("A-KH, A-KC, K-AD, K-AS")
+    assert list(m.states[0].pile("A").cards) == NDO and m.error is None
+    assert m.set_from_text("A-KH, nonsense") is not None
+    assert m.states is None and m.cards == NDO  # the last good deck is kept, but not used
+    m.set_cards(NDO[:10])
+    assert m.deck_problems() == [] and len(m.states) == 2
+    m.set_cards(NDO[:10] + NDO[:1])
+    assert m.deck_problems() == ["Duplicated: AH"] and m.states is None
+
+
+def test_tracker_shuffles_the_target_pile_and_knows_its_size():
+    m = TrackerModel()
+    m.load_preset("New deck order")
+    m.add_step(tracking.TakeOut(tuple(NDO[:1]), "pile"))  # A: 51 cards, B: 1
+    assert m.piles_at(1) == ["A", "B"] and m.size_at(1) == 51 and m.size_at(0) == 52
+    with pytest.raises(ValueError, match="full faro needs an even number"):
+        m.add_step(Step(ops.OUT_FARO))
+    assert len(m.steps) == 1  # refused, not added
+    m.add_step(Step(ops.PARTIAL_OUT_FARO, 25))
+    m.target_pile = "B"
+    m.add_step(Step(ops.OVERHAND_RUN, 1))
+    assert m.steps[2] == tracking.Shuffle(Step(ops.OVERHAND_RUN, 1), "B")
+    m.set_step_x(1, 20)  # an edit keeps the pile
+    assert m.steps[1] == tracking.Shuffle(Step(ops.PARTIAL_OUT_FARO, 20), "A")
+    with pytest.raises(ValueError):
+        m.set_step_x(1, 26)  # too big for 51 cards
+
+
+def test_tracker_marks_a_step_an_earlier_edit_broke():
+    m = TrackerModel()
+    m.load_preset("New deck order")
+    m.add_step(tracking.Split("A", (26,)))
+    m.add_step(tracking.Place("B", "A"))
+    m.add_step(Step(ops.OUT_FARO))
+    m.remove_step(0)  # now there is no pile B to put anywhere
+    assert m.problem == (0, "there is no pile B on the table")
+    assert m.step_problem(0) and m.step_problem(1) is None
+    assert m.step_decks() == [None, None] and len(m.states) == 1
+    assert m.around(1)[1] is None
+    assert m.missing_reason() == "Step 1 can't be done: there is no pile B on the table"
+
+
+def test_format_table_heads_each_pile():
+    table = tracking.Split("A", (2,)).apply(tracking.Table.start(NDO[:3]))
+    assert format_table(table) == ("Pile A \u2014 2 cards\n 1 A\u2665\n 2 2\u2665\n\n"
+                                   "Pile B \u2014 1 card\n 1 3\u2665")
+
+
+def test_format_columns_numbers_down_each_column():
+    lines = format_columns(NDO).splitlines()
+    assert len(lines) == 13
+    assert lines[0].split() == ["1", "A♥", "14", "A♣", "27", "K♦", "40", "K♠"]
+    assert lines[12].split()[-2:] == ["52", "A♠"]
+    assert format_columns(NDO[:3]).splitlines() == [" 1 A♥", " 2 2♥", " 3 3♥"]
+
+
+def grouped_model(n=6):
+    m = TrackerModel()
+    m.load_preset("New deck order")
+    for k in range(n):
+        m.add_step(Step(ops.CUT, k + 1))
+    return m
+
+
+def test_groups_follow_inserts_removals_and_duplicates():
+    m = grouped_model()
+    g = m.add_group(1, 3, " Trick 1 ", "Red")
+    assert (g.title, g.color, g.first, g.last) == ("Trick 1", "Red", 1, 3)
+    m.add_step(Step(ops.OUT_FARO), 0)  # before the group: it moves down
+    assert (g.first, g.last) == (2, 4)
+    m.add_step(Step(ops.OUT_FARO), 3)  # inside: it grows
+    assert (g.first, g.last) == (2, 5)
+    m.add_step(Step(ops.OUT_FARO), 6)  # right after its last step: outside
+    assert (g.first, g.last) == (2, 5)
+    m.duplicate_step(5)  # a copy of its last step joins it
+    assert (g.first, g.last) == (2, 6)
+    m.remove_step(0)
+    assert (g.first, g.last) == (1, 5)
+    for _ in range(5):
+        m.remove_step(1)
+    assert m.groups == []  # its last step went, so the group did too
+    m.add_group(0, 1, "", "Blue")
+    assert m.groups[0].title == "Group"
+    m.clear_steps()
+    assert m.groups == []
+
+
+def test_groups_cannot_overlap_and_can_be_edited_or_removed():
+    m = grouped_model()
+    g = m.add_group(0, 2, "Trick 1", "Red")
+    with pytest.raises(ValueError, match='overlap the group "Trick 1"'):
+        m.add_group(2, 4, "Trick 2", "Blue")
+    with pytest.raises(ValueError, match="pick the steps"):
+        m.add_group(4, 9, "Trick 2", "Blue")
+    h = m.add_group(3, 5, "Trick 2", "Blue")
+    assert m.groups == [g, h] and m.group_of(4) is h and m.group_of(9) is None
+    m.edit_group(g.id, "Opener", "Green")
+    assert (g.title, g.color) == ("Opener", "Green")
+    m.remove_group(g.id)
+    assert m.groups == [h] and len(m.steps) == 6
+
+
+def test_around_a_range_and_a_group():
+    m = grouped_model()
+    m.add_group(1, 3, "Trick 1", "Red")
+    assert m.around(1, 3) == ("Before Trick 1 (#2\u2013#4)", m.states[1],
+                              "After Trick 1 (#2\u2013#4)", m.states[4])
+    assert m.around(0, 1)[::2] == ("Before #1\u2013#2", "After #1\u2013#2")
+    assert m.around(2, 2) == m.around(2)
+
+
+def test_replace_step_checks_it_first():
+    m = grouped_model(1)
+    new = tracking.Rearrange("Reveal", tracking.parse_piles(
+        "A: " + deck.format_cards(NDO[::-1])))
+    m.replace_step(0, new)
+    assert list(m.states[1].pile("A").cards) == NDO[::-1]
+    with pytest.raises(ValueError, match="exactly the cards"):
+        m.replace_step(0, tracking.Rearrange("", tracking.parse_piles("AH")))
+
+
+def test_tracker_saves_and_loads_the_whole_tab(tmp_path):
+    m = TrackerModel()
+    m.set_from_text("A-KH, A-KC, K-AD, K-AS`")
+    ah, ac = deck.parse_cards("AH, AC")
+    for step in (Step(ops.OUT_FARO), Step(ops.PACKET_RUN, 10, 4),
+                 tracking.TakeOut((ah,), "discard"), tracking.AddCards((ah,), "A", 3),
+                 tracking.TakeOut((ac,), "each"), tracking.Split("A", (5, 5)),
+                 tracking.Place("D", "A", False), tracking.Gather(())):
+        m.add_step(step)
+    cards = m.states[-1].pile("A").cards
+    m.add_step(tracking.Rearrange("Reveal", (("A", cards[:20]), ("B", cards[20:]))))
+    m.target_pile = "B"
+    m.add_step(Step(ops.CUT, 3))
+    m.add_group(1, 3, "Trick 1", "Red")
+    m.add_group(5, 6, "Trick 2", "Blue")
+    assert m.problem is None
+    path = tmp_path / "project.json"
+    m.save(path)
+    other = TrackerModel()
+    other.load(path)
+    assert other.cards == m.cards and other.cards[-1].face_up
+    assert other.steps == m.steps
+    assert other.states == m.states
+    assert other.target_pile == "B"
+    assert [(g.title, g.color, g.first, g.last) for g in other.groups] == [
+        ("Trick 1", "Red", 1, 3), ("Trick 2", "Blue", 5, 6)]
+    other.add_group(8, 8, "Trick 3", "Red")  # new groups still get their own id
+    assert len({g.id for g in other.groups}) == 3
+
+
+def test_tracker_and_setup_files_are_not_mixed_up():
+    tracker = TrackerModel()
+    tracker.load_preset("New deck order")
+    with pytest.raises(ValueError, match="Free Tracking"):
+        AppModel().load_dict(tracker.to_dict())
+    with pytest.raises(ValueError, match="not a Free Tracking"):
+        TrackerModel().load_dict(AppModel().to_dict())
+    bad = tracker.to_dict() | {"groups": [{"title": "X", "color": "Red", "first": 0,
+                                           "last": 0}]}  # there are no steps to group
+    with pytest.raises(ValueError, match="aren't there"):
+        tracker.load_dict(bad)
+    assert tracker.cards == NDO  # a failed load leaves the tab as it was

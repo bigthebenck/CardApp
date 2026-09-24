@@ -6,12 +6,14 @@ Two stages:
    faros, overhand runs, cuts). Each side stores everything up to two
    shuffles away, plus everything reachable by up to ``FARO_DEPTH`` full faros
    and then one more shuffle. For a search depth above 4 the remaining
-   forward layers are streamed past the backward side without being stored.
-   That finds a *shortest* sequence whenever one of ``depth`` (default
-   ``SHORTEST_DEPTH``) or fewer shuffles exists, and also finds longer
+   forward layers are streamed past the backward side without being stored,
+   in numpy blocks matched against sorted keys. From depth 6 the backward
+   side also keeps a third layer, as keys only, which saves streaming one
+   forward layer. That finds a *shortest* sequence whenever one of ``depth``
+   (default ``SHORTEST_DEPTH``) or fewer shuffles exists, and also finds longer
    faro-heavy routes such as "4 out-faros, run 26, partial faro of 18, cut".
    Each streamed layer multiplies the time by the number of distinct
-   shuffles (about 300): depth 5 takes seconds, 6 tens of minutes.
+   shuffles (about 300): depths 5 and 6 take seconds, 7 several minutes.
    Optional stepping stones (known stacks) are also tried as a midpoint:
    start -> stone -> target, each leg found by the same search.
 2. Otherwise a constructive fallback that always succeeds, but is long. Read the deck as a
@@ -30,11 +32,13 @@ round, as bytes giving each card's position, so a shuffle is one
 import time
 from dataclasses import dataclass
 
+import numpy as np
+
 from . import shuffle_ops as ops
 from .solver import Step, simulate
 
 SHORTEST_DEPTH = 5  # default depth: any route this short is found, so such a hit is optimal
-MAX_DEPTH = 7  # 7 already means hundreds of billions of decks to check
+MAX_DEPTH = 7  # 7 already means billions of decks to check
 STORED_DEPTH = 2  # layers kept in memory on each side; deeper ones are streamed
 FARO_DEPTH = 6  # full faros tried in a row at each end of the search
 
@@ -54,7 +58,9 @@ def all_steps(n=ops.DECK_SIZE):
 
     Shuffles that move the cards the same way as an earlier one are left out
     (a partial faro of n/2 is a full faro; "out-faro of top 1 into bottom" is
-    cut 1), so the simpler name is the one reported.
+    cut 1), so the simpler name is the one reported. Packet runs are tried
+    only running the whole packet (reversing the top X): the ~1200 partial
+    runs would make every search layer about five times bigger.
     """
     steps = _faro_steps(n)
     for kind in ops.KINDS_WITH_X:
@@ -62,7 +68,7 @@ def all_steps(n=ops.DECK_SIZE):
         steps += [Step(kind, x) for x in range(lo, hi + 1)]
     seen, distinct = set(), []
     for step in steps:
-        perm = tuple(ops.permutation(step.kind, step.x, n))
+        perm = tuple(step.permutation(n))
         if perm not in seen:
             seen.add(perm)
             distinct.append(step)
@@ -134,18 +140,24 @@ def find_path(start, target, stones=(), depth=SHORTEST_DEPTH, cancel=None, progr
 
     stones = list(stones)
     backup = None
-    layers = range(1, depth - covered + 1)
-    if improved is not None and layers:
+    lengths = range(covered + 1, depth + 1)
+    if improved is not None and lengths:
         # The streamed layers are slow; have an answer to show while they run.
         best.offer(found)
         if found is None or len(found) > depth:  # else the fallback could not win anyway
             backup = fallback()
             best.offer(backup)
-    for extra in layers:
-        if found is not None and len(found) < covered + extra:
-            break  # this layer only adds routes of exactly covered + extra shuffles
-        hit = _meet_streamed(fwd, bwd, moves, near_f, extra, report,
-                             f"Checking routes of {covered + extra} shuffles…", best.offer)
+    targets = None
+    for length in lengths:
+        if found is not None and len(found) <= length:
+            break  # every route shorter than this has been ruled out, so it is optimal
+        if targets is None:
+            # From depth 6 up, one more backward layer is kept as keys, which saves
+            # streaming a whole forward layer (about 300 times the work).
+            targets = _Targets(bwd, moves, n, near_b, depth >= covered + 2, report)
+            roots = [(state, path) for state, path in fwd.items() if len(path) == near_f]
+        hit = _stream(roots, moves, targets, length - near_f - targets.depth, length, report,
+                      f"Checking routes of {length} shuffles…", best.offer)
         if hit is not None and (found is None or len(hit) < len(found)):
             found = hit
     if found is not None and len(found) <= depth:
@@ -204,7 +216,7 @@ def _moves(steps, n):
     """(step, forward table, backward table) for ``bytes.translate`` on search states."""
     moves = []
     for step in steps:
-        perm = ops.permutation(step.kind, step.x, n)
+        perm = step.permutation(n)
         inv = [0] * n
         for i, p in enumerate(perm):
             inv[p] = i
@@ -256,46 +268,178 @@ def _meet(fwd, bwd):
     return best
 
 
-def _meet_streamed(fwd, bwd, moves, root_len, layers, report, text, on_hit=None):
-    """Take every forward state ``root_len`` moves out ``layers`` moves further.
+# --- bulk matching (numpy) ------------------------------------------------------------
+#
+# A deck's key is the positions of KEY_CARDS cards spread through the deck, read as
+# one uint64. Different decks can share a key, so every key match is checked on the
+# whole deck before it is used.
 
-    Nothing is stored; each deck is only matched against the backward side,
-    so this adds every route of root_len + layers + (backward depth) moves.
-    On the last layer a state's whole set of next decks is checked in one
-    C-level ``isdisjoint`` call; only a hit is looked at move by move, and
-    each new best hit is passed to ``on_hit`` straight away.
+KEY_CARDS = 8
+BLOCK = 1 << 14  # decks expanded at once; each makes one more per move (about 300)
+MAX_TARGETS = 1 << 26  # deeper backward decks than this are streamed instead (memory)
+_MIX = np.uint64(0x9E3779B97F4A7C15)  # odd, so multiplying by it loses nothing
+
+
+def _sample(n):
+    """The cards making up a key, spread through the deck (all of them in a tiny deck)."""
+    if n < KEY_CARDS:
+        return list(range(n))
+    return [i * n // KEY_CARDS + n // (2 * KEY_CARDS) for i in range(KEY_CARDS)]
+
+
+def _keys(cols):
+    """uint64 keys from an array whose last axis holds the sampled cards' positions."""
+    if cols.shape[-1] < KEY_CARDS:
+        padded = np.zeros(cols.shape[:-1] + (KEY_CARDS,), np.uint8)
+        padded[..., :cols.shape[-1]] = cols
+        cols = padded
+    return np.ascontiguousarray(cols).view(np.uint64).reshape(-1)
+
+
+def _array(states, n):
+    return np.frombuffer(b"".join(states), np.uint8).reshape(len(states), n)
+
+
+def _tables(tables):
+    return np.frombuffer(b"".join(tables), np.uint8).reshape(len(tables), 256)
+
+
+class _Targets:
+    """The backward side as one sorted uint64 array, for matching forward decks in bulk.
+
+    Holds every stored backward deck and, when ``deep``, every deck one move
+    beyond the stored decks ``near`` moves out. There are about 300 of those
+    per stored deck, too many to keep whole, so each is kept only as its key
+    and where it came from. Each entry is the key scrambled by ``_MIX``, with
+    its low bits replaced by a code saying where the deck came from. A bitmap
+    over the entries' top bits turns most misses away after one memory read.
     """
-    steps = [step for step, _f, _b in moves]
-    tables = [f for _s, f, _b in moves]
-    targets = bwd.keys()
-    roots = [(state, path) for state, path in fwd.items() if len(path) == root_len]
-    best = None
-    trail = []  # moves taken below the current root
 
-    def walk(state, root_path, left):
+    def __init__(self, bwd, moves, n, near, deep, report):
+        self.n, self.sample = n, _sample(n)
+        self.steps = [step for step, _f, _b in moves]
+        self.back = [b for _s, _f, b in moves]
+        self.stored = list(bwd.items())
+        self.edge = [(s, p) for s, p in self.stored if len(p) == near] if deep else []
+        if len(self.edge) * len(self.steps) > MAX_TARGETS:
+            self.edge = []
+        self.depth = near + 1 if self.edge else near
+        # code c < len(stored): stored[c]; above that: edge deck i after move k,
+        # at len(stored) + k * len(edge) + i
+        size = len(self.stored) + len(self.steps) * len(self.edge)
+        self.low = np.uint64((1 << max(1, (size - 1).bit_length())) - 1)
+        entries = np.empty(size, np.uint64)
+        self._fill(entries, 0, _array([s for s, _p in self.stored], n)[:, self.sample])
+        if self.edge:
+            cols = _array([s for s, _p in self.edge], n)[:, self.sample]
+            for k, table in enumerate(_tables(self.back)):
+                report(None, "Building search tables…")
+                self._fill(entries, len(self.stored) + k * len(self.edge), table[cols])
+        report(None, "Building search tables…")
+        entries.sort()
+        self.entries = entries
+        bits = max(16, (32 * size).bit_length())  # about 3% of the bitmap is set
+        self.shift = np.uint64(64 - bits)
+        self.bitmap = np.zeros(1 << (bits - 3), np.uint8)
+        for at in range(0, size, BLOCK * 64):
+            report(None, "Building search tables…")
+            h = entries[at:at + BLOCK * 64] >> self.shift  # sorted, so bytes come in runs
+            byte = h >> 3
+            runs = np.flatnonzero(np.concatenate(([True], byte[1:] != byte[:-1])))
+            bit = np.left_shift(1, (h & 7).astype(np.uint8)).astype(np.uint8)
+            self.bitmap[byte[runs]] |= np.bitwise_or.reduceat(bit, runs)
+
+    def _fill(self, entries, at, cols):
+        codes = np.arange(at, at + len(cols), dtype=np.uint64)
+        entries[at:at + len(cols)] = (_keys(cols) * _MIX) & ~self.low | codes
+
+    def find(self, keys):
+        """(i, lo, hi): each ``keys[i]`` may be here, at ``entries[lo:hi]``."""
+        q = (keys * _MIX) & ~self.low
+        h = q >> self.shift
+        i = np.flatnonzero((self.bitmap[h >> 3] >> (h & 7).astype(np.uint8)) & 1)
+        lo = np.searchsorted(self.entries, q[i], "left")
+        hi = np.searchsorted(self.entries, q[i] | self.low, "right")
+        hit = lo < hi
+        return i[hit], lo[hit], hi[hit]
+
+    def codes(self, lo, hi):
+        return (self.entries[lo:hi] & self.low).tolist()
+
+    def entry(self, code):
+        """(deck, backward path) for a code."""
+        if code < len(self.stored):
+            return self.stored[code]
+        k, i = divmod(code - len(self.stored), len(self.edge))
+        state, path = self.edge[i]
+        return state.translate(self.back[k]), [self.steps[k]] + path
+
+
+class _Found(Exception):
+    pass
+
+
+def _stream(roots, moves, targets, extra, length, report, text, on_hit):
+    """The shortest route: a root, ``extra`` more forward moves, then a deck in ``targets``.
+
+    ``roots`` are (forward deck, path) pairs. Nothing more is stored: decks
+    are expanded a block at a time as numpy arrays and their keys looked up in
+    ``targets``, the last move's decks by key alone. Each new best route is
+    passed to ``on_hit``, and the search stops at the first one of ``length``
+    moves, as every shorter route has already been ruled out.
+    """
+    if not roots:
+        return None
+    n = targets.n
+    steps = [step for step, _f, _b in moves]
+    forward = [f for _s, f, _b in moves]
+    tables = _tables(forward)
+    by_position = np.ascontiguousarray(tables.T)  # gathers faster for the last move
+    per = max(1, BLOCK // len(steps))  # decks per block one move before the last
+    best = None
+
+    def match(block, origin, left):
+        """Look up ``block`` (left == 0) or every deck one move on from it (left == 1)."""
         nonlocal best
-        if left == 1:
-            news = list(map(state.translate, tables))
-            if targets.isdisjoint(news):
-                return
-            for step, new in zip(steps, news):
-                if new in bwd:
-                    route = root_path + trail + [step] + bwd[new]
+        report(origin[0, 0] / len(roots), text)
+        cols = block[:, targets.sample]
+        # with left == 1, key b * len(steps) + k is for move k from block[b]
+        q = _keys(by_position[cols].transpose(0, 2, 1) if left else cols)
+        for j, lo, hi in zip(*(a.tolist() for a in targets.find(q))):
+            row, last = divmod(j, len(steps)) if left else (j, None)
+            state, path = roots[origin[row, 0]]
+            taken = origin[row, 1:].tolist() + ([last] if left else [])
+            for m in taken:
+                state = state.translate(forward[m])
+            for code in targets.codes(lo, hi):
+                deck, back = targets.entry(code)
+                if deck == state:
+                    route = path + [steps[m] for m in taken] + back
                     if best is None or len(route) < len(best):
                         best = route
-                        if on_hit is not None:
-                            on_hit(best)
-            return
-        if left >= 3:
-            report(done / len(roots), text)  # this deep, a single root takes seconds
-        for step, new in zip(steps, map(state.translate, tables)):
-            trail.append(step)
-            walk(new, root_path, left - 1)
-            trail.pop()
+                        on_hit(best)
+                        if len(route) <= length:
+                            raise _Found
 
-    for done, (state, path) in enumerate(roots):
-        report(done / len(roots), text)
-        walk(state, path, layers)
+    def descend(block, origin, left):
+        """``origin`` rows: the root's index, then the moves taken since."""
+        if left <= 1:
+            match(block, origin, left)
+            return
+        for at in range(0, len(block), per):
+            part, came = block[at:at + per], origin[at:at + per]
+            nxt = tables[:, part].reshape(-1, n)
+            moved = np.repeat(np.arange(len(steps)), len(part))[:, None]
+            descend(nxt, np.hstack([np.tile(came, (len(steps), 1)), moved]), left - 1)
+
+    states = _array([s for s, _p in roots], n)
+    size = BLOCK if extra else BLOCK * len(steps)  # keys looked up per match stay ~BLOCK * 300
+    try:
+        for at in range(0, len(roots), size):
+            block = states[at:at + size]
+            descend(block, np.arange(at, at + len(block))[:, None], extra)
+    except _Found:
+        pass
     return best
 
 

@@ -9,7 +9,7 @@ here and no Tk, so it is unit-tested directly.
 import json
 from dataclasses import dataclass, field
 
-from .. import deck, path_finder, solver
+from .. import deck, path_finder, solver, tracking
 from .. import shuffle_ops as ops
 
 DECK_SIZE = ops.DECK_SIZE
@@ -28,7 +28,75 @@ class Result:
         return self.start is not None
 
 
-class AppModel:
+class StepList:
+    """Editing of an ordered ``self.steps`` list; subclasses provide ``_changed()``."""
+
+    def _check(self, step, index):
+        """Raise ValueError/TypeError unless ``step`` can be done at position ``index``."""
+        step.validate(DECK_SIZE)
+
+    def _rebuilt(self, old, x, y):
+        """Step ``old`` with a new X and Y."""
+        return solver.Step(old.kind, x, y)
+
+    def _inserted(self, index, copy_of=None):
+        """A step was inserted at ``index`` (a copy of step ``copy_of``, if given)."""
+
+    def _removed(self, index):
+        """Step ``index`` was removed (None: every step was)."""
+
+    def add_step(self, step, index=None):
+        index = len(self.steps) if index is None else index
+        self._check(step, index)
+        self.steps.insert(index, step)
+        self._inserted(index)
+        self._changed()
+
+    def remove_step(self, index):
+        del self.steps[index]
+        self._removed(index)
+        self._changed()
+
+    def duplicate_step(self, index):
+        self.steps.insert(index + 1, self.steps[index])
+        self._inserted(index + 1, copy_of=index)
+        self._changed()
+
+    def move_step(self, index, delta):
+        """Move a step up (delta -1) or down (+1). Returns its new index."""
+        new = index + delta
+        if not 0 <= new < len(self.steps):
+            return index
+        self.steps[index], self.steps[new] = self.steps[new], self.steps[index]
+        self._changed()
+        return new
+
+    def set_step_x(self, index, x):
+        old = self.steps[index]
+        # A packet run keeps its Y while it still leaves cards in hand, else runs them all.
+        y = old.y if old.y is not None and isinstance(x, int) and old.y < x else None
+        step = self._rebuilt(old, x, y)
+        self._check(step, index)
+        if step != self.steps[index]:
+            self.steps[index] = step
+            self._changed()
+
+    def set_step_y(self, index, y):
+        """Cards run in a packet run; None (or X) runs the whole packet."""
+        old = self.steps[index]
+        step = self._rebuilt(old, old.x, None if y == old.x else y)
+        self._check(step, index)
+        if step != self.steps[index]:
+            self.steps[index] = step
+            self._changed()
+
+    def clear_steps(self):
+        self.steps = []
+        self._removed(None)
+        self._changed()
+
+
+class AppModel(StepList):
     def __init__(self):
         self.slots = [None] * DECK_SIZE  # Card or None, position 0 = top
         self.steps = []
@@ -104,44 +172,6 @@ class AppModel:
         """Shorthand of the filled slots in order (empty slots are skipped)."""
         return deck.format_cards(self.filled_cards(), compress)
 
-    # --- shuffle sequence ---------------------------------------------------------
-
-    def add_step(self, step, index=None):
-        step.validate(DECK_SIZE)
-        if index is None:
-            self.steps.append(step)
-        else:
-            self.steps.insert(index, step)
-        self._changed()
-
-    def remove_step(self, index):
-        del self.steps[index]
-        self._changed()
-
-    def duplicate_step(self, index):
-        self.steps.insert(index + 1, self.steps[index])
-        self._changed()
-
-    def move_step(self, index, delta):
-        """Move a step up (delta -1) or down (+1). Returns its new index."""
-        new = index + delta
-        if not 0 <= new < len(self.steps):
-            return index
-        self.steps[index], self.steps[new] = self.steps[new], self.steps[index]
-        self._changed()
-        return new
-
-    def set_step_x(self, index, x):
-        step = solver.Step(self.steps[index].kind, x)
-        step.validate(DECK_SIZE)
-        if step != self.steps[index]:
-            self.steps[index] = step
-            self._changed()
-
-    def clear_steps(self):
-        self.steps = []
-        self._changed()
-
     # --- result ----------------------------------------------------------------------
 
     def _recompute(self):
@@ -180,10 +210,13 @@ class AppModel:
         return {
             "version": 1,
             "final": [str(c) if c else None for c in self.slots],
-            "steps": [{"kind": s.kind, "x": s.x} for s in self.steps],
+            "steps": [{"kind": s.kind, "x": s.x, **({"y": s.y} if s.y is not None else {})}
+                      for s in self.steps],
         }
 
     def load_dict(self, data):
+        if data.get("type") == TRACKER_FILE_TYPE:
+            raise ValueError("this is a Free Tracking project, not a Starting Order setup")
         slots = []
         for text in data.get("final", []):
             if text is None:
@@ -195,7 +228,7 @@ class AppModel:
                 slots.append(cards[0])
         if len(slots) > DECK_SIZE:
             raise ValueError("saved deck has too many cards")
-        steps = [solver.Step(s["kind"], s.get("x")) for s in data.get("steps", [])]
+        steps = [solver.Step(s["kind"], s.get("x"), s.get("y")) for s in data.get("steps", [])]
         solver.validate_steps(steps, DECK_SIZE)
         self.slots = slots + [None] * (DECK_SIZE - len(slots))
         self.steps = steps
@@ -212,7 +245,10 @@ class AppModel:
 
 
 def split_cards(step, before):
-    """(card above, card below) the split of a faro done on the deck ``before``, else None.
+    """(card above, card below) the split of a step done on the deck ``before``, else None.
+
+    Faros, cuts and packet runs (the packet picked up) split the deck; see
+    ``ops.split_point``.
 
     The first is the bottom card of the upper packet, the face you see when the
     deck is split in the right place; the second is the top card of the rest.
@@ -222,7 +258,7 @@ def split_cards(step, before):
 
 
 def split_note(step, before):
-    """``"split 7♠|K♦"`` for a faro (see ``split_cards``), or ``""`` for other shuffles."""
+    """``"split 7♠|K♦"`` for a step that splits (see ``split_cards``), else ``""``."""
     cards = split_cards(step, before)
     return "" if cards is None else f"split {cards[0].pretty()}|{cards[1].pretty()}"
 
@@ -234,13 +270,14 @@ def step_line(k, step, before=None):
 
 
 def format_splits(steps, states):
-    """One line per faro step: where to split the deck it is done on ("" if no faros).
+    """One line per step that splits: where to split its deck ("" if none do).
 
-    ``states`` are start, after step 1, ...; step k splits states[k - 1].
+    ``states`` are start, after step 1, ...; step k splits states[k - 1]. A None
+    state (a step that isn't done to a single deck) has nothing to split.
     """
     lines = []
     for k, step in enumerate(steps, 1):
-        cards = split_cards(step, states[k - 1])
+        cards = split_cards(step, states[k - 1]) if states[k - 1] is not None else None
         if cards is not None:
             lines.append(f"#{k:<2} {cards[0].pretty():>4} | {cards[1].pretty()}")
     if not lines:
@@ -285,7 +322,7 @@ class PathOutcome:
 class XToYModel:
     """Two deck orders and the shuffles found to get from the first to the second.
 
-    Finding a path takes seconds (minutes above depth 5), so it only runs on
+    Finding a path takes seconds (minutes at depth 7), so it only runs on
     ``solve()``, or ``search()`` on a worker thread; any edit to either order
     clears the old answer.
     """
@@ -426,6 +463,359 @@ def search_outcome(start, end, depth, cancel=None, progress=None, improved=None)
 
 
 def format_instructions(steps, states=None):
-    """Numbered steps; with ``states`` (start, after each step, ...) faros show their split."""
+    """Numbered steps; with ``states`` (start, after each step, ...) splits are shown."""
     return "\n".join(step_line(k, s, states[k - 1] if states else None)
                      for k, s in enumerate(steps, 1))
+
+
+# --- free tracking -------------------------------------------------------------------------
+
+
+class TrackerModel(StepList):
+    """A deck entered by hand and the steps done to it, followed pile by pile.
+
+    Nothing is solved here: the cards are simply pushed forward through the
+    steps (see ``tracking``). ``states`` is [table at start, after step 1, ...]
+    up to the first step that can't be done, whose (index, message) is kept in
+    ``problem``; ``states`` is None while there is no usable deck.
+    """
+
+    def __init__(self):
+        self.cards = []
+        self.error = None  # shorthand parse error
+        self.steps = []
+        self.states = None
+        self.problem = None
+        self.target_pile = tracking.START_PILE  # the pile new shuffles are done to
+        self.groups = []  # of StepGroup, in step order, never overlapping
+        self._next_group_id = 1
+        self._listeners = []
+
+    def subscribe(self, callback):
+        self._listeners.append(callback)
+
+    def _changed(self):
+        self._recompute()
+        for cb in list(self._listeners):
+            cb(self)
+
+    def _recompute(self):
+        if self.error is None and not self.deck_problems():
+            self.states, self.problem = tracking.replay(self.cards, self.steps)
+        else:
+            self.states, self.problem = None, None
+
+    # --- the starting deck ---------------------------------------------------------
+
+    def set_cards(self, cards):
+        if list(cards) != self.cards or self.error:
+            self.cards = list(cards)
+            self.error = None
+            self._changed()
+
+    def set_from_text(self, text):
+        """Parse shorthand into the deck; returns the error message or None."""
+        try:
+            self.set_cards(deck.parse_cards(text))
+        except ValueError as exc:
+            if self.error != str(exc):
+                self.error = str(exc)
+                self._changed()
+            return self.error
+        return None
+
+    def load_preset(self, name):
+        self.set_cards(deck.PRESETS[name])
+
+    def deck_problems(self):
+        """Why the deck can't be tracked (empty list when it can).
+
+        Any number of cards will do, since steps can add and remove them, but
+        each card only once.
+        """
+        if not self.cards:
+            return ["No cards yet."]
+        dups = deck.validate_deck(self.cards).duplicates
+        return ["Duplicated: " + ", ".join(dups)] if dups else []
+
+    # --- steps -------------------------------------------------------------------------
+
+    def table_before(self, index):
+        """The table a step at ``index`` is done on, or None if it isn't known."""
+        if self.states is None or index >= len(self.states):
+            return None
+        return self.states[index]
+
+    def _check(self, step, index):
+        table = self.table_before(index)
+        if table is not None:
+            step.apply(table)
+        elif isinstance(step, tracking.Shuffle):
+            step.step.validate(DECK_SIZE)
+
+    def _rebuilt(self, old, x, y):
+        return tracking.Shuffle(solver.Step(old.kind, x, y), old.pile)
+
+    def add_step(self, step, index=None):
+        """Add a step; a plain shuffle (``solver.Step``) is done to ``target_pile``."""
+        if isinstance(step, solver.Step):
+            step = tracking.Shuffle(step, self.target_pile)
+        super().add_step(step, index)
+
+    def replace_step(self, index, step):
+        """Put ``step`` in place of step ``index`` (e.g. an edited rearrangement)."""
+        self._check(step, index)
+        if step != self.steps[index]:
+            self.steps[index] = step
+            self._changed()
+
+    # --- groups ------------------------------------------------------------------------
+
+    def _inserted(self, index, copy_of=None):
+        for g in self.groups:
+            if g.first < index <= g.last or (copy_of is not None
+                                             and g.first <= copy_of <= g.last):
+                g.last += 1
+            elif index <= g.first:
+                g.first += 1
+                g.last += 1
+
+    def _removed(self, index):
+        if index is None:
+            self.groups = []
+            return
+        for g in self.groups:
+            if index < g.first:
+                g.first -= 1
+                g.last -= 1
+            elif index <= g.last:
+                g.last -= 1
+        self.groups = [g for g in self.groups if g.first <= g.last]
+
+    def add_group(self, first, last, title, color):
+        """Group steps ``first``..``last`` (inclusive) under a title and colour."""
+        if not 0 <= first <= last < len(self.steps):
+            raise ValueError("pick the steps to group first")
+        clash = [g for g in self.groups if g.first <= last and first <= g.last]
+        if clash:
+            raise ValueError(f"those steps overlap the group \"{clash[0].title}\"; "
+                             "ungroup it first")
+        group = StepGroup(self._next_group_id, title.strip() or "Group", color, first, last)
+        self._next_group_id += 1
+        self.groups = sorted(self.groups + [group], key=lambda g: g.first)
+        self._changed()
+        return group
+
+    def edit_group(self, group_id, title, color):
+        g = self.group(group_id)
+        g.title, g.color = title.strip() or "Group", color
+        self._changed()
+
+    def remove_group(self, group_id):
+        """Ungroup: the steps stay, only the grouping goes."""
+        self.groups = [g for g in self.groups if g.id != group_id]
+        self._changed()
+
+    def group(self, group_id):
+        return next(g for g in self.groups if g.id == group_id)
+
+    def group_of(self, index):
+        """The group step ``index`` belongs to, or None."""
+        return next((g for g in self.groups if g.first <= index <= g.last), None)
+
+    # --- tables ------------------------------------------------------------------------
+
+    def piles_at(self, index):
+        """Names of the piles a step at ``index`` would find on the table."""
+        table = self.table_before(index)
+        return table.names if table is not None else [tracking.START_PILE]
+
+    def size_at(self, index, pile=None):
+        """How many cards pile ``pile`` (default: ``target_pile``) holds for a step at
+        ``index``; None when that isn't known."""
+        table = self.table_before(index)
+        name = self.target_pile if pile is None else pile
+        if table is None or name not in table.names:
+            return None
+        return len(table.pile(name))
+
+    def step_decks(self):
+        """For each step, the cards of the pile it shuffles as they were just before it.
+
+        None for steps that aren't shuffles, and for the step that fails and those after it.
+        """
+        out = []
+        for i, step in enumerate(self.steps):
+            table = self.table_before(i)
+            ok = (isinstance(step, tracking.Shuffle) and table is not None
+                  and self.step_problem(i) is None)
+            out.append(list(table.pile(step.pile).cards) if ok else None)
+        return out
+
+    def step_problem(self, index):
+        """The message for step ``index`` if it is the one that can't be done."""
+        return self.problem[1] if self.problem and self.problem[0] == index else None
+
+    def missing_reason(self):
+        """What to show in place of a table that can't be worked out."""
+        if self.states is None:
+            return "Enter a deck on the left (any number of cards, each once)."
+        if self.problem:
+            return f"Step {self.problem[0] + 1} can't be done: {self.problem[1]}"
+        return ""
+
+    def around(self, index=None, last=None):
+        """(before title, before table, after title, after table) for step ``index``,
+        or for the steps ``index``..``last`` when ``last`` is given.
+
+        With no step picked it is the whole run: the starting table and the
+        table after the last step. A table is None when it can't be worked out
+        (no deck, or a step on the way can't be done).
+        """
+        n = len(self.steps)
+        if index is None:
+            titles = ("Starting order", f"After all {n} step{'s' if n != 1 else ''}"
+                      if n else "After the steps (none yet)")
+            first, end = 0, n
+        elif last is None or last == index:
+            label = self.steps[index].label()
+            titles = (f"Before #{index + 1}: {label}", f"After #{index + 1}: {label}")
+            first, end = index, index + 1
+        else:
+            span = f"#{index + 1}\u2013#{last + 1}"
+            group = self.group_of(index)
+            if group is not None and (group.first, group.last) == (index, last):
+                span = f"{group.title} ({span})"
+            titles = (f"Before {span}", f"After {span}")
+            first, end = index, last + 1
+        return titles[0], self.table_before(first), titles[1], self.table_before(end)
+
+    # --- persistence -------------------------------------------------------------------
+
+    def to_dict(self):
+        """Everything on the tab: the deck, every step, the groups and the shuffle pile."""
+        return {
+            "type": TRACKER_FILE_TYPE,
+            "version": 1,
+            "cards": [str(c) for c in self.cards],
+            "target_pile": self.target_pile,
+            "steps": [_step_to_dict(s) for s in self.steps],
+            "groups": [{"title": g.title, "color": g.color, "first": g.first, "last": g.last}
+                       for g in self.groups],
+        }
+
+    def load_dict(self, data):
+        """Replace everything with a saved project; raises ValueError if it isn't one."""
+        if data.get("type") != TRACKER_FILE_TYPE:
+            raise ValueError("this is not a Free Tracking project")
+        cards = [_card(text) for text in data.get("cards", [])]
+        steps = [_step_from_dict(s) for s in data.get("steps", [])]
+        groups = []
+        for i, g in enumerate(data.get("groups", []), 1):
+            first, last = int(g["first"]), int(g["last"])
+            if not 0 <= first <= last < len(steps):
+                raise ValueError(f"group {g.get('title')!r} covers steps that aren't there")
+            if groups and first <= groups[-1].last:
+                raise ValueError("saved groups overlap")
+            groups.append(StepGroup(i, str(g.get("title") or "Group"),
+                                    str(g.get("color", "")), first, last))
+        self.cards, self.error, self.steps = cards, None, steps
+        self.groups, self._next_group_id = groups, len(groups) + 1
+        self.target_pile = str(data.get("target_pile") or tracking.START_PILE)
+        self._changed()
+
+    def save(self, path):
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(self.to_dict(), fh, indent=2)
+
+    def load(self, path):
+        with open(path, encoding="utf-8") as fh:
+            self.load_dict(json.load(fh))
+
+
+TRACKER_FILE_TYPE = "free_tracking"
+
+
+def _card(text):
+    cards = deck.parse_cards(text)
+    if len(cards) != 1:
+        raise ValueError(f"bad card {text!r} in saved file")
+    return cards[0]
+
+
+def _cards_of(texts):
+    return tuple(_card(t) for t in texts)
+
+
+def _step_to_dict(step):
+    """A tracking step as plain JSON data (see ``_step_from_dict``)."""
+    if isinstance(step, tracking.Shuffle):
+        return {"kind": step.kind, "x": step.x, **({"y": step.y} if step.y is not None else {}),
+                "pile": step.pile}
+    if isinstance(step, tracking.TakeOut):
+        return {"kind": step.kind, "cards": [str(c) for c in step.cards], "mode": step.mode}
+    if isinstance(step, tracking.AddCards):
+        return {"kind": step.kind, "cards": [str(c) for c in step.cards], "pile": step.pile,
+                "position": step.position}
+    if isinstance(step, tracking.Split):
+        return {"kind": step.kind, "pile": step.pile, "sizes": list(step.sizes)}
+    if isinstance(step, tracking.Place):
+        return {"kind": step.kind, "pile": step.pile, "onto": step.onto, "top": step.top}
+    if isinstance(step, tracking.Gather):
+        return {"kind": step.kind, "names": list(step.names)}
+    if isinstance(step, tracking.Rearrange):
+        return {"kind": step.kind, "title": step.title,
+                "piles": [[name, [str(c) for c in cards]] for name, cards in step.piles]}
+    raise TypeError(f"can't save a {type(step).__name__} step")
+
+
+def _step_from_dict(d):
+    kind = d["kind"]
+    if kind == "take_out":
+        return tracking.TakeOut(_cards_of(d["cards"]), d.get("mode", "pile"))
+    if kind == "add_cards":
+        return tracking.AddCards(_cards_of(d["cards"]), d.get("pile"), int(d.get("position", 1)))
+    if kind == "split":
+        return tracking.Split(d["pile"], tuple(int(s) for s in d["sizes"]))
+    if kind == "place":
+        return tracking.Place(d["pile"], d["onto"], bool(d.get("top", True)))
+    if kind == "gather":
+        return tracking.Gather(tuple(d.get("names", ())))
+    if kind == "rearrange":
+        return tracking.Rearrange(d.get("title", ""),
+                                  tuple((name, _cards_of(cards)) for name, cards in d["piles"]))
+    step = solver.Step(kind, d.get("x"), d.get("y"))
+    step.validate(DECK_SIZE)
+    return tracking.Shuffle(step, d.get("pile", tracking.START_PILE))
+
+
+@dataclass
+class StepGroup:
+    """A titled, coloured run of steps (``first``..``last``, inclusive), e.g. one trick."""
+
+    id: int
+    title: str
+    color: str  # a name from theme.GROUP_COLORS
+    first: int
+    last: int
+
+
+def format_table(table):
+    """Every pile on ``table``: a heading with its size, then its cards in columns."""
+    blocks = []
+    for pile in table.piles:
+        n = len(pile)
+        blocks.append(f"Pile {pile.name} — {n} card{'s' if n != 1 else ''}\n"
+                      + format_columns(list(pile.cards)))
+    return "\n\n".join(blocks) if blocks else "(no cards left on the table)"
+
+
+def format_columns(cards, rows=13):
+    """Numbered cards in columns of ``rows``, top first down each column."""
+    cols = [cards[i:i + rows] for i in range(0, len(cards), rows)]
+    lines = []
+    for r in range(min(rows, len(cards))):
+        cells = [f"{c * rows + r + 1:>2} {col[r].pretty():<4}"
+                 for c, col in enumerate(cols) if r < len(col)]
+        lines.append("  ".join(cells).rstrip())
+    return "\n".join(lines)

@@ -273,6 +273,48 @@ def test_split_point():
     assert ops.split_point(ops.PARTIAL_IN_FARO_TOP_BOTTOM, 5) == 5
     assert ops.split_point(ops.PARTIAL_OUT_FARO_BOTTOM_TOP, 9) == 43
     assert ops.split_point(ops.PARTIAL_IN_FARO_BOTTOM_BOTTOM, 26) == 26
-    assert ops.split_point(ops.CUT, 10) is None and ops.split_point(ops.OVERHAND_RUN, 3) is None
+    assert ops.split_point(ops.CUT, 10) == 10 and ops.split_point(ops.OVERHAND_RUN, 3) is None
+    assert ops.split_point(ops.PACKET_RUN, 52) is None  # the whole deck: nothing to split off
     with pytest.raises(ValueError):
         ops.split_point(ops.PARTIAL_OUT_FARO, 30)
+
+
+# --- packet run ---------------------------------------------------------------
+
+def ref_packet_run(deck, x, y):
+    """Pick up the top x, run y singly onto the tabled deck, drop the rest on top."""
+    hand, table = deck[:x], deck[x:]
+    for card in hand[:y]:
+        table = [card] + table
+    return hand[y:] + table
+
+
+@pytest.mark.parametrize("x", [2, 5, 26, 51, 52])
+def test_packet_run_matches_reference(x):
+    deck = list(range(N))
+    for y in range(1, x + 1):
+        assert deck_after(ops.permutation(ops.PACKET_RUN, x, y=y)) == ref_packet_run(deck, x, y)
+
+
+def test_packet_run_without_y_reverses_top_packet():
+    result = deck_after(ops.permutation(ops.PACKET_RUN, 5))
+    assert result == [4, 3, 2, 1, 0] + list(range(5, N))
+    assert ops.permutation(ops.PACKET_RUN, 5) == ops.permutation(ops.PACKET_RUN, 5, y=5)
+
+
+def test_packet_run_of_whole_deck_is_overhand_run():
+    for y in (1, 7, 52):
+        assert ops.permutation(ops.PACKET_RUN, N, y=y) == ops.permutation(ops.OVERHAND_RUN, y)
+
+
+def test_packet_run_bounds():
+    assert ops.x_bounds(ops.PACKET_RUN) == (2, 52)
+    with pytest.raises(ValueError):
+        ops.permutation(ops.PACKET_RUN, 1)
+    with pytest.raises(ValueError):
+        ops.permutation(ops.PACKET_RUN, 5, y=6)
+    with pytest.raises(ValueError):
+        ops.permutation(ops.PACKET_RUN, 5, y=0)
+    with pytest.raises(ValueError):
+        ops.check_y(ops.CUT, 5, 2)
+    assert ops.split_point(ops.PACKET_RUN, 5) == 5
