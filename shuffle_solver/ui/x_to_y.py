@@ -86,6 +86,7 @@ class XToYTab:
         self._text_cards = {"start": None, "end": None}  # cards each box last described
         self.viewers = CardViewers(self.frame)
         self._job = None  # the running _SearchJob, if any
+        self._poll_job = None  # the pending after() call to _poll
         self._phase = None  # (progress text, start time, start fraction) for the time estimate
 
         self.texts, self.errors, self.statuses, self.preset_vars = {}, {}, {}, {}
@@ -246,7 +247,16 @@ class XToYTab:
             self._job.cancel.set()
             self.progress_label.config(text="Cancelling…")
 
+    def close(self):
+        """Stop the search and pending edits before the tab's widgets go away."""
+        if self._job is not None:
+            self._job.cancel.set()
+        for job in [self._poll_job, *self._jobs.values()]:
+            if job is not None:
+                self.frame.after_cancel(job)
+
     def _poll(self):
+        self._poll_job = None
         job = self._job
         if job is None:
             return
@@ -256,7 +266,7 @@ class XToYTab:
             if (best is not None and best is not self.model.outcome
                     and job.cards == self.model.cards and not job.cancel.is_set()):
                 self.model.set_outcome(best)  # show the best route so far
-            self.frame.after(POLL_MS, self._poll)
+            self._poll_job = self.frame.after(POLL_MS, self._poll)
             return
         self._job = None
         self.progress_bar.stop()

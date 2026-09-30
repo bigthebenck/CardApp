@@ -82,6 +82,20 @@ iscc /DAppVersion=1.1.0 installer/CardApp.iss # -> dist/CardApp-Setup-1.1.0.exe
 
 ## Using it
 
+The window starts empty. Press **+ New tab** in the middle (or the small **+**
+after the last tab, or Ctrl+T) and pick what the tab is for: **Starting
+Order**, **X to Y**, **Free Tracking**, **Stack Trainer** or **Stacking**. Open as
+many tabs of each kind as you like; each keeps its own work.
+
+- Click a tab to show it, and drag it sideways to move it.
+- Double-click its title to rename it (Enter keeps the name, Escape cancels).
+- Click its **×**, middle-click it, or press Ctrl+W to close it. Closing a tab
+  throws its work away, so save first if you need it.
+- Right-click a tab for Rename, Move left/right, Close and Close other tabs.
+- Ctrl+Tab and Ctrl+Shift+Tab step through the tabs.
+
+### Starting Order tab
+
 1. **Final deck** – pick a preset (new deck order, Si Stebbins, Aronson,
    Mnemonica), type shorthand, or set cards slot by slot. Duplicates are
    highlighted in red and missing cards are listed. Use `X` (or `X12` for
@@ -93,14 +107,18 @@ iscc /DAppVersion=1.1.0 installer/CardApp.iss # -> dist/CardApp-Setup-1.1.0.exe
 3. **Starting order** – recomputed on every change. Copy it as shorthand or a
    numbered list, export it to a text file, or open the step-by-step preview.
 
-Every shorthand field (final deck, starting order, and X and Y on the next
+Every shorthand field (final deck, starting order, and X and Y in an X to Y
 tab) has a **View cards** button. It opens a window that shows the order as card
 pictures in rows of 13, top first. Face-up cards have an orange outline, and
 empty slots are dashed. The window stays open and updates as you edit. Card
 images are from [MattCain/svg-playing-cards](https://github.com/MattCain/svg-playing-cards)
 (MIT).
 
-File → Save/Open setup stores the final deck and sequence as JSON.
+File → Save… (Ctrl+S) saves the tab on show: a Starting Order tab as a setup
+(its final deck and sequence) and a Free Tracking tab as a tracking project,
+both JSON. File → Open… (Ctrl+O) opens either kind of file in a new tab named
+after the file. A tab you haven't renamed takes the name of the file you save
+it to.
 
 View → Theme picks a colour theme (Sandstone by default), and View → Dark mode
 (Ctrl+D) switches it between light and dark. The choice is remembered in
@@ -160,7 +178,8 @@ card can go there. A card wanted in two hands is flagged. The starting order
 lists every position and the hand it goes to. The other positions are X,
 or tick the box to fill them with the unused cards in new deck order. Copy
 the result, view it as cards, or press **Use as final deck →** to send it to
-the Starting Order tab. That tab then works out how to set up the deck so a
+a Starting Order tab (the one you looked at last, or a new one if none is
+open). That tab then works out how to set up the deck so a
 shuffle sequence ends in this stack.
 
 ## Card shorthand
@@ -210,7 +229,9 @@ shuffle_solver/
   stacking.py      poker deals: which card goes where, and the stack for a deal
   deck.py          Card, shorthand parser/formatter, validation, presets
   ui/model.py      toolkit-free app state (tested without a display)
-  ui/app.py        Tkinter window and tabs
+  ui/app.py        Tkinter window: menus, files, and the kinds of tab
+  ui/tabs.py       the tab strip: add, close, rename and reorder tabs
+  ui/solver_tab.py the Starting Order tab
   ui/theme.py      ttkbootstrap theme choice and the app's custom styles
   ui/x_to_y.py     the X to Y tab
   ui/trainer.py    the Stack Trainer tab

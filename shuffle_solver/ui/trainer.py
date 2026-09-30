@@ -155,6 +155,12 @@ class TrainerTab:
             self.frame.after_cancel(self._text_job)
         self._text_job = self.frame.after(TEXT_DEBOUNCE_MS, self.apply_text)
 
+    def close(self):
+        """Stop pending edits before the tab's widgets go away."""
+        if self._text_job is not None:
+            self.frame.after_cancel(self._text_job)
+            self._text_job = None
+
     def apply_text(self):
         """Parse the shorthand box into the model now (also called after the debounce)."""
         if self._text_job is not None:

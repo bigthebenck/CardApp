@@ -9,8 +9,10 @@ tb = pytest.importorskip("ttkbootstrap")
 
 from shuffle_solver import deck, solver  # noqa: E402
 from shuffle_solver import shuffle_ops as ops  # noqa: E402
+from shuffle_solver.ui import app as app_module  # noqa: E402
 from shuffle_solver.ui import theme  # noqa: E402
-from shuffle_solver.ui.app import ShuffleSolverApp  # noqa: E402
+from shuffle_solver.ui.app import (SOLVER, STACKING, TRACKER, TRAINER, X_TO_Y,  # noqa: E402
+                                   ShuffleSolverApp)
 from shuffle_solver.ui.model import format_table  # noqa: E402
 
 
@@ -47,6 +49,12 @@ def app(root):
     return ShuffleSolverApp(root)
 
 
+@pytest.fixture
+def st(app):
+    """A Starting Order tab (``SolverTab``), the only tab open."""
+    return app.new_tab(SOLVER)
+
+
 def wait_for_search(tab, timeout=60):
     end = time.monotonic() + timeout
     while tab.searching:
@@ -55,139 +63,249 @@ def wait_for_search(tab, timeout=60):
         time.sleep(0.02)
 
 
-def start_text(app):
-    return app.start_text.get("1.0", "end").strip()
+def start_text(tab):
+    return tab.start_text.get("1.0", "end").strip()
 
 
-def steps_shown(app):
+def steps_shown(tab):
     """The step table's rows as (shuffle, card you see) pairs."""
-    t = app.sequence.step_list
+    t = tab.sequence.step_list
     return [tuple(t.set(row, col) for col in ("step", "see")) for row in t.get_children()]
 
 
-def test_preset_add_steps_and_result(app):
-    app.load_preset()
-    assert app.badge.cget("text") == "PASS"
-    app.sequence.new_x_var.set("7")
-    app.sequence.add_step(ops.OUT_FARO)
-    app.sequence.add_step(ops.OVERHAND_RUN)
-    see = app.model.result.start[25].pretty()  # bottom card of the upper half
-    assert steps_shown(app) == [("1. Out-Faro", see), ("2. Overhand Run of 7", "")]
-    assert app.badge.cget("text") == "PASS"
-    assert start_text(app).splitlines()[0].startswith("1.")
+def test_preset_add_steps_and_result(st):
+    st.load_preset()
+    assert st.badge.cget("text") == "PASS"
+    st.sequence.new_x_var.set("7")
+    st.sequence.add_step(ops.OUT_FARO)
+    st.sequence.add_step(ops.OVERHAND_RUN)
+    see = st.model.result.start[25].pretty()  # bottom card of the upper half
+    assert steps_shown(st) == [("1. Out-Faro", see), ("2. Overhand Run of 7", "")]
+    assert st.badge.cget("text") == "PASS"
+    assert start_text(st).splitlines()[0].startswith("1.")
 
 
-def test_reorder_in_ui_changes_result(app):
-    app.load_preset()
-    app.sequence.add_step(ops.OUT_FARO)
-    app.sequence.add_step(ops.CUT)
-    before = start_text(app)
-    app.sequence.select_step(1)
-    app.sequence._move_step(-1)
-    assert steps_shown(app)[0] == ("1. Cut 5", app.model.result.start[4].pretty())
-    assert app.sequence.selected_step() == 0  # the moved step stays selected
-    assert start_text(app) != before
+def test_reorder_in_ui_changes_result(st):
+    st.load_preset()
+    st.sequence.add_step(ops.OUT_FARO)
+    st.sequence.add_step(ops.CUT)
+    before = start_text(st)
+    st.sequence.select_step(1)
+    st.sequence._move_step(-1)
+    assert steps_shown(st)[0] == ("1. Cut 5", st.model.result.start[4].pretty())
+    assert st.sequence.selected_step() == 0  # the moved step stays selected
+    assert start_text(st) != before
 
 
-def test_duplicate_slot_highlighted_and_result_cleared(app):
-    app.load_preset()
-    app.slot_vars[3].set("AH")
-    app._commit_slot(3)
-    assert str(app.slot_boxes[0].cget("style")) == "Dup.TCombobox"
-    assert str(app.slot_boxes[3].cget("style")) == "Dup.TCombobox"
-    assert app.badge.cget("text") == "WAITING"
-    assert start_text(app) == ""
-    assert "Duplicated: AH" in app.deck_status.cget("text")
+def test_duplicate_slot_highlighted_and_result_cleared(st):
+    st.load_preset()
+    st.slot_vars[3].set("AH")
+    st._commit_slot(3)
+    assert str(st.slot_boxes[0].cget("style")) == "Dup.TCombobox"
+    assert str(st.slot_boxes[3].cget("style")) == "Dup.TCombobox"
+    assert st.badge.cget("text") == "WAITING"
+    assert start_text(st) == ""
+    assert "Duplicated: AH" in st.deck_status.cget("text")
 
 
-def test_shorthand_box_drives_grid(app):
-    app.final_text.delete("1.0", "end")
-    app.final_text.insert("1.0", "A-KCHSD`")
-    app.apply_text()
-    assert app.slot_vars[0].get() == "A♣"
-    assert app.slot_vars[51].get() == "K♦`"
-    assert app.badge.cget("text") == "PASS"
+def test_shorthand_box_drives_grid(st):
+    st.final_text.delete("1.0", "end")
+    st.final_text.insert("1.0", "A-KCHSD`")
+    st.apply_text()
+    assert st.slot_vars[0].get() == "A♣"
+    assert st.slot_vars[51].get() == "K♦`"
+    assert st.badge.cget("text") == "PASS"
     # The user's own formatting is kept after an unrelated edit.
-    app.sequence.add_step(ops.IN_FARO)
-    assert app.final_text.get("1.0", "end").strip() == "A-KCHSD`"
+    st.sequence.add_step(ops.IN_FARO)
+    assert st.final_text.get("1.0", "end").strip() == "A-KCHSD`"
 
 
-def test_shorthand_error_shown(app):
-    app.load_preset()
-    app.final_text.delete("1.0", "end")
-    app.final_text.insert("1.0", "A-KC, ZZ")
-    app.apply_text()
-    assert "unexpected character" in app.text_error.cget("text")
-    assert app.badge.cget("text") == "WAITING"
+def test_shorthand_error_shown(st):
+    st.load_preset()
+    st.final_text.delete("1.0", "end")
+    st.final_text.insert("1.0", "A-KC, ZZ")
+    st.apply_text()
+    assert "unexpected character" in st.text_error.cget("text")
+    assert st.badge.cget("text") == "WAITING"
 
 
-def test_grid_edit_rewrites_shorthand(app):
-    app.load_preset()
-    app.slot_vars[0].set("")
-    app._commit_slot(0)
-    assert app.final_text.get("1.0", "end").strip().startswith("2-KH")
+def test_grid_edit_rewrites_shorthand(st):
+    st.load_preset()
+    st.slot_vars[0].set("")
+    st._commit_slot(0)
+    assert st.final_text.get("1.0", "end").strip().startswith("2-KH")
 
 
-def test_edit_selected_x(app):
-    app.load_preset()
-    app.sequence.add_step(ops.CUT)
-    app.sequence.select_step(0)
-    app.sequence.edit_x_var.set("26")
-    app.sequence.commit_edit_x()
-    assert app.model.steps[0].x == 26
-    app.sequence.edit_x_var.set("52")
-    app.sequence.commit_edit_x()
-    assert app.model.steps[0].x == 26
-    assert "Invalid X" in app.sequence.seq_error.cget("text")
+def test_edit_selected_x(st):
+    st.load_preset()
+    st.sequence.add_step(ops.CUT)
+    st.sequence.select_step(0)
+    st.sequence.edit_x_var.set("26")
+    st.sequence.commit_edit_x()
+    assert st.model.steps[0].x == 26
+    st.sequence.edit_x_var.set("52")
+    st.sequence.commit_edit_x()
+    assert st.model.steps[0].x == 26
+    assert "Invalid X" in st.sequence.seq_error.cget("text")
 
 
-def test_faro_splits_shown_under_step_list(app):
-    app.sequence.add_step(ops.OUT_FARO)
-    assert app.sequence.split_label.cget("text") == ""  # no deck yet, so nothing to split
-    app.load_preset()
-    app.sequence.add_step(ops.CUT)
-    app.sequence.add_step(ops.OVERHAND_RUN)
-    start, mid = app.model.result.start, app.model.result.states[1]
-    lines = app.sequence.split_label.cget("text").splitlines()
+def test_faro_splits_shown_under_step_list(st):
+    st.sequence.add_step(ops.OUT_FARO)
+    assert st.sequence.split_label.cget("text") == ""  # no deck yet, so nothing to split
+    st.load_preset()
+    st.sequence.add_step(ops.CUT)
+    st.sequence.add_step(ops.OVERHAND_RUN)
+    start, mid = st.model.result.start, st.model.result.states[1]
+    lines = st.sequence.split_label.cget("text").splitlines()
     assert lines[0].startswith("Where to split")
     assert lines[1:] == [f"#1  {start[25].pretty():>4} | {start[26].pretty()}",
                          f"#2  {mid[4].pretty():>4} | {mid[5].pretty()}"]  # not the run
-    assert steps_shown(app) == [("1. Out-Faro", start[25].pretty()),
+    assert steps_shown(st) == [("1. Out-Faro", start[25].pretty()),
                                 ("2. Cut 5", mid[4].pretty()), ("3. Overhand Run of 5", "")]
 
 
-def test_partial_faro_direction_picker(app):
-    app.sequence.new_x_var.set("9")
-    app.sequence.add_step(app.sequence.partial_kind(True))
-    app.sequence.partial_dir_var.set("bottom into top")
-    app.sequence.add_step(app.sequence.partial_kind(False))
-    assert [step for step, _see in steps_shown(app)] == [
+def test_partial_faro_direction_picker(st):
+    st.sequence.new_x_var.set("9")
+    st.sequence.add_step(st.sequence.partial_kind(True))
+    st.sequence.partial_dir_var.set("bottom into top")
+    st.sequence.add_step(st.sequence.partial_kind(False))
+    assert [step for step, _see in steps_shown(st)] == [
         "1. Partial Out-Faro of top 9 into top", "2. Partial In-Faro of bottom 9 into top"]
 
 
-def test_preview_toggle(app):
-    app.load_preset()
-    app.sequence.add_step(ops.OUT_FARO)
-    app.preview_var.set(True)
-    app._toggle_preview()
-    text = app.preview_text.get("1.0", "end")
+def test_preview_toggle(st):
+    st.load_preset()
+    st.sequence.add_step(ops.OUT_FARO)
+    st.preview_var.set(True)
+    st._toggle_preview()
+    text = st.preview_text.get("1.0", "end")
     assert "Out-Faro" in text and len(text.splitlines()) >= 53
 
 
-def test_copy_shorthand_parses_back(app):
-    app.load_preset()
-    app.sequence.add_step(ops.OUT_FARO)
-    text = app._start_shorthand()
-    assert deck.parse_cards(text) == app.model.result.start
+def test_copy_shorthand_parses_back(st):
+    st.load_preset()
+    st.sequence.add_step(ops.OUT_FARO)
+    text = st._start_shorthand()
+    assert deck.parse_cards(text) == st.model.result.start
 
 
-def test_tabs_present(app):
-    tabs = [app.notebook.tab(t, "text") for t in app.notebook.tabs()]
-    assert tabs == ["Starting Order", "X to Y", "Free Tracking", "Stack Trainer", "Stacking"]
+def test_starts_with_no_tabs_and_a_new_tab_button(app):
+    tabs = app.tabs
+    assert tabs.tabs == [] and tabs.current is None
+    assert tabs.empty.winfo_manager() == "pack" and tabs.bar.winfo_manager() == ""
+    assert tabs.new_menu.index("end") == 4  # one entry per kind of tab
+    assert [tabs.new_menu.entrycget(i, "label") for i in range(5)] == [
+        "Starting Order", "X to Y", "Free Tracking", "Stack Trainer", "Stacking"]
+    assert str(app.filemenu.entrycget("Save…", "state")) == "disabled"
+    app.tabs.new_menu.invoke(1)
+    assert [t.kind for t in tabs.tabs] == [X_TO_Y] and tabs.current is tabs.tabs[0]
+    assert tabs.empty.winfo_manager() == "" and tabs.bar.winfo_manager() == "pack"
+    assert app.root.title().startswith("X to Y — ")
+    assert str(app.filemenu.entrycget("Save…", "state")) == "disabled"
+    app.new_tab(TRACKER)
+    assert str(app.filemenu.entrycget("Save…", "state")) == "normal"
+
+
+def test_tabs_of_any_kind_can_repeat_and_get_their_own_titles(app):
+    first, second = app.new_tab(SOLVER), app.new_tab(SOLVER)
+    app.new_tab(STACKING)
+    app.new_tab(SOLVER, "Mine")
+    assert app.tabs.titles() == ["Starting Order", "Starting Order 2", "Stacking", "Mine"]
+    first.load_preset()
+    assert first.badge.cget("text") == "PASS" and second.model.slots != first.model.slots
+
+
+def test_close_shows_a_neighbour_and_stops_the_tab(app):
+    tabs = app.tabs
+    for kind in (SOLVER, X_TO_Y, TRAINER):
+        app.new_tab(kind)
+    a, b, c = tabs.tabs
+    tabs.select(b)
+    x_to_y = b.content
+    x_to_y.load_preset("start")
+    x_to_y.model.set_cards("end", random_order(3))
+    x_to_y.depth_var.set(7)
+    x_to_y._on_depth("7")
+    x_to_y.solve()
+    job = x_to_y._job
+    tabs.close(b)  # the one on show: the tab to its right takes its place
+    assert job.cancel.is_set() and not b.content.frame.winfo_exists()
+    assert tabs.tabs == [a, c] and tabs.current is c
+    assert c.content.frame.winfo_manager() == "pack"
+    tabs.close(c)  # the last one: the one to its left
+    assert tabs.current is a
+    tabs.select(a)
+    tabs.close(a)
+    assert tabs.tabs == [] and tabs.current is None
+    assert tabs.empty.winfo_manager() == "pack" and app.root.title() == app_module.APP_TITLE
+    app.root.update()  # no stray callbacks into the destroyed tabs
+
+
+def test_close_others_and_ctrl_w(app):
+    for kind in (SOLVER, X_TO_Y, TRACKER):
+        app.new_tab(kind)
+    keep = app.tabs.tabs[1]
+    app.tabs.close_others(keep)
+    assert app.tabs.tabs == [keep] and app.tabs.current is keep
+    app.close_current()
+    assert app.tabs.tabs == []
+    app.close_current()  # nothing open: nothing happens
+
+
+def test_tabs_reorder(app):
+    for kind in (SOLVER, X_TO_Y, TRACKER):
+        app.new_tab(kind)
+    tabs = app.tabs
+    a, b, c = tabs.tabs
+    tabs.move(a, 2)
+    assert tabs.tabs == [b, c, a]
+    tabs.move(a, -5)  # clamped to the ends
+    assert tabs.tabs == [a, b, c]
+    tabs.select_next(-1)
+    assert tabs.current is b  # c was on show; Ctrl+Shift+Tab goes left
+    packed = [w for w in tabs.strip.pack_slaves()]
+    assert packed == [a.header, b.header, c.header]
+
+
+def test_drag_a_tab_past_its_neighbours(root):
+    root.deiconify()
+    app = ShuffleSolverApp(root)
+    for kind in (SOLVER, X_TO_Y, TRACKER):
+        app.new_tab(kind)
+    root.update()
+    tabs = app.tabs
+    a, b, c = tabs.tabs
+    tabs._press(a)
+    assert tabs.current is a
+    tabs._drag_to(a, c.header.winfo_rootx() + c.header.winfo_width() - 2)
+    assert tabs.tabs == [b, c, a]
+    tabs._drag_to(a, b.header.winfo_rootx() + 2)
+    assert tabs.tabs == [a, b, c]
+    tabs._release()
+    tabs._drag_to(a, c.header.winfo_rootx() + c.header.winfo_width() - 2)
+    assert tabs.tabs == [a, b, c]  # not dragging any more
+
+
+def test_rename_a_tab_in_place(app):
+    app.new_tab(SOLVER)
+    tab = app.tabs.tabs[0]
+    entry = app.tabs.start_rename(tab)
+    assert entry.var.get() == "Starting Order" and tab.label.winfo_manager() == ""
+    entry.var.set("  Aronson opener ")
+    app.tabs.finish_rename(tab)
+    assert tab.title == "Aronson opener" and tab.label.cget("text") == "Aronson opener"
+    assert tab.entry is None and tab.label.winfo_manager() == "pack"
+    assert app.root.title().startswith("Aronson opener — ")
+    app.tabs.start_rename(tab).var.set("Nope")
+    app.tabs.finish_rename(tab, keep=False)  # Escape
+    assert tab.title == "Aronson opener"
+    app.tabs.start_rename(tab).var.set("   ")
+    app.tabs.finish_rename(tab)  # blank: kept as it was
+    assert tab.title == "Aronson opener"
 
 
 def test_x_to_y_tab_finds_shuffles(app):
-    tab = app.x_to_y
+    tab = app.new_tab(X_TO_Y)
     tab.load_preset("start")
     tab.texts["end"].delete("1.0", "end")
     tab.texts["end"].insert("1.0", deck.format_cards(
@@ -202,7 +320,7 @@ def test_x_to_y_tab_finds_shuffles(app):
 
 
 def test_x_to_y_swap_keeps_typed_text(app):
-    tab = app.x_to_y
+    tab = app.new_tab(X_TO_Y)
     tab.texts["start"].insert("1.0", "A-KCHSD")
     tab.apply_text("start")
     tab.load_preset("end")
@@ -224,42 +342,42 @@ def test_card_image_for_every_card():
         assert image_path(deck.Card(key[0], key[1])).is_file(), key
 
 
-def test_view_final_cards_follows_edits(app):
-    app.load_preset()
-    viewer = app.viewers.open("final", "Final deck", lambda: app.model.slots)
+def test_view_final_cards_follows_edits(st):
+    st.load_preset()
+    viewer = st.viewers.open("final", "Final deck", lambda: st.model.slots)
     assert len(images_on(viewer)) == 52
-    app.model.set_slot(51, None)  # trailing empty slot is dropped
+    st.model.set_slot(51, None)  # trailing empty slot is dropped
     assert len(images_on(viewer)) == 51
-    app.model.set_slot(0, None)  # inner empty slot is drawn as a placeholder
+    st.model.set_slot(0, None)  # inner empty slot is drawn as a placeholder
     assert len(images_on(viewer)) == 50
     assert "50 cards" in viewer.summary.cget("text")
     viewer.close()
-    app.model.clear_final()  # refresh with the popup closed must not fail
-    assert app.viewers.get("final") is None
+    st.model.clear_final()  # refresh with the popup closed must not fail
+    assert st.viewers.get("final") is None
 
 
-def test_view_final_cards_uses_pending_text(app):
-    app.final_text.insert("1.0", "AC`, 2H")
-    app._on_text_modified(None)  # debounce scheduled, not yet applied
-    app.view_final_cards()
-    viewer = app.viewers.get("final")
+def test_view_final_cards_uses_pending_text(st):
+    st.final_text.insert("1.0", "AC`, 2H")
+    st._on_text_modified(None)  # debounce scheduled, not yet applied
+    st.view_final_cards()
+    viewer = st.viewers.get("final")
     assert len(images_on(viewer)) == 2
     assert "1 face up" in viewer.summary.cget("text")
-    app.view_final_cards()  # a second click reuses the same window
-    assert app.viewers.get("final") is viewer
+    st.view_final_cards()  # a second click reuses the same window
+    assert st.viewers.get("final") is viewer
 
 
-def test_view_start_cards(app):
-    app.view_start_cards()
-    viewer = app.viewers.get("start")
+def test_view_start_cards(st):
+    st.view_start_cards()
+    viewer = st.viewers.get("start")
     assert images_on(viewer) == []
-    app.load_preset()
-    app.sequence.add_step(ops.OUT_FARO)
+    st.load_preset()
+    st.sequence.add_step(ops.OUT_FARO)
     assert len(images_on(viewer)) == 52
 
 
 def test_x_to_y_view_cards(app):
-    tab = app.x_to_y
+    tab = app.new_tab(X_TO_Y)
     tab.load_preset("start")
     tab.view_cards("start")
     tab.view_cards("end")
@@ -277,7 +395,7 @@ def random_order(seed):
 
 
 def test_x_to_y_depth_slider_warns_above_six(app):
-    tab = app.x_to_y
+    tab = app.new_tab(X_TO_Y)
     assert tab.depth_var.get() == 5 and "⚠" not in tab.depth_note.cget("text")
     tab.depth_var.set(6)
     tab._on_depth("6")
@@ -289,7 +407,7 @@ def test_x_to_y_depth_slider_warns_above_six(app):
 
 
 def test_x_to_y_cancel_long_search(app):
-    tab = app.x_to_y
+    tab = app.new_tab(X_TO_Y)
     tab.load_preset("start")
     tab.model.set_cards("end", random_order(5))
     tab.depth_var.set(7)
@@ -304,7 +422,7 @@ def test_x_to_y_cancel_long_search(app):
 
 
 def test_x_to_y_edit_during_search_cancels_it(app):
-    tab = app.x_to_y
+    tab = app.new_tab(X_TO_Y)
     tab.load_preset("start")
     tab.model.set_cards("end", random_order(6))
     tab.depth_var.set(7)
@@ -326,9 +444,10 @@ def test_theme_menu_switches_and_remembers_theme(root, tmp_path):
     a.toggle_dark()
     assert tb.Style().theme_use() == "nord-dark"
     assert theme.ThemeChoice.load(path) == theme.ThemeChoice("nord", True)
-    a.load_preset()
-    assert a.badge.cget("text") == "PASS"
-    assert str(a.badge.cget("style")) == "@success.TLabel"
+    tab = a.new_tab(SOLVER)
+    tab.load_preset()
+    assert tab.badge.cget("text") == "PASS"
+    assert str(tab.badge.cget("style")) == "@success.TLabel"
 
 
 def test_theme_settings_fall_back_to_default(root, tmp_path):
@@ -341,26 +460,26 @@ def test_theme_settings_fall_back_to_default(root, tmp_path):
     assert theme.DEFAULT_FAMILY in theme.families() and "nord" in theme.families()
 
 
-def test_card_viewer_felt_survives_theme_switch(app):
+def test_card_viewer_felt_survives_theme_switch(app, st):
     from shuffle_solver.ui.card_viewer import FELT_COLOR
-    app.load_preset()
-    app.view_final_cards()
+    st.load_preset()
+    st.view_final_cards()
     app.dark_var.set(True)
     app.set_theme()
-    assert app.viewers.get("final").canvas.cget("background") == FELT_COLOR
+    assert st.viewers.get("final").canvas.cget("background") == FELT_COLOR
 
 
-def test_export_writes_file_and_confirms(app, tmp_path, monkeypatch):
-    from shuffle_solver.ui import app as app_module
+def test_export_writes_file_and_confirms(st, tmp_path, monkeypatch):
+    from shuffle_solver.ui import solver_tab as tab_module
     shown = []
-    monkeypatch.setattr(app_module.messagebox, "showinfo", lambda *a, **k: shown.append(a))
-    monkeypatch.setattr(app_module.messagebox, "showerror", lambda *a, **k: shown.append(a))
+    monkeypatch.setattr(tab_module.messagebox, "showinfo", lambda *a, **k: shown.append(a))
+    monkeypatch.setattr(tab_module.messagebox, "showerror", lambda *a, **k: shown.append(a))
     path = tmp_path / "start.txt"
-    monkeypatch.setattr(app_module.filedialog, "asksaveasfilename", lambda **k: str(path))
-    monkeypatch.setattr(app, "_ask_export_notes", lambda: "")
-    app.load_preset()
-    app.model.add_step(solver.Step(ops.OUT_FARO), 0)
-    app.export_start()
+    monkeypatch.setattr(tab_module.filedialog, "asksaveasfilename", lambda **k: str(path))
+    monkeypatch.setattr(st, "_ask_export_notes", lambda: "")
+    st.load_preset()
+    st.model.add_step(solver.Step(ops.OUT_FARO), 0)
+    st.export_start()
     text = path.read_text(encoding="utf-8")
     assert "Shuffle sequence:\n 1. Out-Faro  (split " in text
     assert "A is the card you see on the bottom of the upper packet" in text
@@ -368,26 +487,26 @@ def test_export_writes_file_and_confirms(app, tmp_path, monkeypatch):
     assert shown == [("Export", f"Saved to {path}")]
 
     shown.clear()
-    monkeypatch.setattr(app, "_ask_export_notes", lambda: "Force the 7S.\nSecond line")
-    app.export_start()
+    monkeypatch.setattr(st, "_ask_export_notes", lambda: "Force the 7S.\nSecond line")
+    st.export_start()
     assert path.read_text(encoding="utf-8").endswith("\nNotes:\nForce the 7S.\nSecond line\n")
 
     shown.clear()
     path.unlink()
-    monkeypatch.setattr(app, "_ask_export_notes", lambda: None)  # cancelled
-    app.export_start()
+    monkeypatch.setattr(st, "_ask_export_notes", lambda: None)  # cancelled
+    st.export_start()
     assert not path.exists() and shown == []
-    monkeypatch.setattr(app, "_ask_export_notes", lambda: "")
+    monkeypatch.setattr(st, "_ask_export_notes", lambda: "")
 
     shown.clear()
     bad = tmp_path / "no-such-dir" / "start.txt"
-    monkeypatch.setattr(app_module.filedialog, "asksaveasfilename", lambda **k: str(bad))
-    app.export_start()
+    monkeypatch.setattr(tab_module.filedialog, "asksaveasfilename", lambda **k: str(bad))
+    st.export_start()
     assert shown[0][0] == "Export" and "Could not save" in shown[0][1]
 
 
 def test_x_to_y_shows_best_so_far_and_keeps_it_on_cancel(app):
-    tab = app.x_to_y
+    tab = app.new_tab(X_TO_Y)
     tab.load_preset("start")
     tab.model.set_cards("end", random_order(7))
     tab.depth_var.set(7)
@@ -561,31 +680,31 @@ def test_damaged_download_is_deleted_and_not_run(root, tmp_path, dialogs, monkey
     assert dialogs and dialogs[0][0] == "askyesno" and "damaged" in dialogs[0][1]
 
 
-def test_add_and_edit_packet_run(app):
-    app.load_preset()
-    app.sequence.new_x_var.set("10")
-    app.sequence.new_y_var.set("")
-    app.sequence.add_step(ops.PACKET_RUN)
-    app.sequence.new_y_var.set("3")
-    app.sequence.add_step(ops.PACKET_RUN)
-    assert [s for s, _see in steps_shown(app)] == ["1. Packet Run: reverse top 10",
+def test_add_and_edit_packet_run(st):
+    st.load_preset()
+    st.sequence.new_x_var.set("10")
+    st.sequence.new_y_var.set("")
+    st.sequence.add_step(ops.PACKET_RUN)
+    st.sequence.new_y_var.set("3")
+    st.sequence.add_step(ops.PACKET_RUN)
+    assert [s for s, _see in steps_shown(st)] == ["1. Packet Run: reverse top 10",
                                                    "2. Packet Run: pick up 10, run 3"]
-    assert app.badge.cget("text") == "PASS"
-    app.sequence.select_step(0)
-    assert str(app.sequence.edit_y.cget("state")) == "normal" and app.sequence.edit_y_var.get() == ""
-    app.sequence.edit_y_var.set("4")
-    app.sequence.commit_edit_y()
-    assert app.model.steps[0] == solver.Step(ops.PACKET_RUN, 10, 4)
-    app.sequence.edit_y_var.set("11")
-    app.sequence.commit_edit_y()
-    assert "Invalid Y" in app.sequence.seq_error.cget("text")
-    app.sequence.new_y_var.set("12")
-    app.sequence.add_step(ops.PACKET_RUN)
-    assert "Can't add step" in app.sequence.seq_error.cget("text") and len(app.model.steps) == 2
-    app.sequence.add_step(ops.CUT)  # Y is ignored for other shuffles; goes after the selected step
-    assert app.model.steps[1] == solver.Step(ops.CUT, 10)
-    app.sequence.select_step(1)
-    assert str(app.sequence.edit_y.cget("state")) == "disabled"
+    assert st.badge.cget("text") == "PASS"
+    st.sequence.select_step(0)
+    assert str(st.sequence.edit_y.cget("state")) == "normal" and st.sequence.edit_y_var.get() == ""
+    st.sequence.edit_y_var.set("4")
+    st.sequence.commit_edit_y()
+    assert st.model.steps[0] == solver.Step(ops.PACKET_RUN, 10, 4)
+    st.sequence.edit_y_var.set("11")
+    st.sequence.commit_edit_y()
+    assert "Invalid Y" in st.sequence.seq_error.cget("text")
+    st.sequence.new_y_var.set("12")
+    st.sequence.add_step(ops.PACKET_RUN)
+    assert "Can't add step" in st.sequence.seq_error.cget("text") and len(st.model.steps) == 2
+    st.sequence.add_step(ops.CUT)  # Y is ignored for other shuffles; goes after the selected step
+    assert st.model.steps[1] == solver.Step(ops.CUT, 10)
+    st.sequence.select_step(1)
+    assert str(st.sequence.edit_y.cget("state")) == "disabled"
 
 
 def shown(tab, side):
@@ -593,7 +712,7 @@ def shown(tab, side):
 
 
 def test_tracker_shows_whole_run_or_one_step(app):
-    tab = app.tracker
+    tab = app.new_tab(TRACKER)
     assert "Enter a deck" in shown(tab, "before")[1]
     tab.preset_var.set("New deck order")
     tab.load_preset()
@@ -617,7 +736,7 @@ def test_tracker_shows_whole_run_or_one_step(app):
 
 
 def test_tracker_typed_deck_and_card_viewer(app):
-    tab = app.tracker
+    tab = app.new_tab(TRACKER)
     tab.deck_text.insert("1.0", "A-KH, A-KC, K-AD, K-AS")
     tab.frame.update()  # lets the box report the edit, starting the debounce
     tab.sequence.add_step(ops.OUT_FARO)
@@ -632,10 +751,10 @@ def test_tracker_view_buttons_stay_visible_in_a_small_window(root):
     root.deiconify()
     root.geometry("1200x700")
     app = ShuffleSolverApp(root)
-    app.notebook.select(app.tracker.frame)
+    tracker = app.new_tab(TRACKER)
     root.update()
     for side in ("before", "after"):
-        frame = app.tracker.boxes[side]
+        frame = tracker.boxes[side]
         buttons = [w for row in frame.winfo_children() for w in row.winfo_children()
                    if isinstance(w, tb.Button)]
         assert [b.cget("text") for b in buttons] == ["Copy shorthand", "View cards"]
@@ -645,7 +764,8 @@ def test_tracker_view_buttons_stay_visible_in_a_small_window(root):
 
 
 def test_tracker_aces_example_with_card_and_packet_steps(app):
-    tab, seq = app.tracker, app.tracker.sequence
+    tab = app.new_tab(TRACKER)
+    seq = tab.sequence
     tab.deck_text.insert("1.0", "AC, AH, AS, AD, 2-KC, 2-KH, 2-KS, 2-KD")
     tab.apply_text()
     tab.sizes_var.set("1,1,1,1, 12 12 12 12")
@@ -673,7 +793,8 @@ def test_tracker_aces_example_with_card_and_packet_steps(app):
 
 
 def test_tracker_card_steps_and_the_odd_pile_rule(app):
-    tab, seq = app.tracker, app.tracker.sequence
+    tab = app.new_tab(TRACKER)
+    seq = tab.sequence
     tab.load_preset()
     tab.cards_var.set("AS")
     assert tab.take_out("discard")  # 51 cards left
@@ -701,7 +822,7 @@ def test_tracker_card_steps_and_the_odd_pile_rule(app):
 
 
 def test_tracker_names_x_cards(app):
-    tab = app.tracker
+    tab = app.new_tab(TRACKER)
     tab.model.set_from_text("AC, X3")
     tab.cards_var.set("KS")
     tab.name_pos_var.set("1")
@@ -712,7 +833,7 @@ def test_tracker_names_x_cards(app):
 
 
 def test_tracker_rearrange_dialog_adds_and_edits_a_step(app):
-    tab = app.tracker
+    tab = app.new_tab(TRACKER)
     tab.load_preset()
     dialog = tab.open_rearrange()
     assert dialog.text.get("1.0", "end-1c") == deck.format_cards(tab.model.cards)  # prefilled
@@ -735,7 +856,8 @@ def test_tracker_rearrange_dialog_adds_and_edits_a_step(app):
 
 
 def test_tracker_groups_steps_by_range(app):
-    tab, seq = app.tracker, app.tracker.sequence
+    tab = app.new_tab(TRACKER)
+    seq = tab.sequence
     tab.load_preset()
     for x in range(1, 6):
         seq.new_x_var.set(str(x))
@@ -773,30 +895,56 @@ def test_tracker_groups_steps_by_range(app):
 
 
 def test_open_puts_each_kind_of_file_in_its_tab(app, tmp_path):
-    tab = app.tracker
+    tab = app.new_tab(TRACKER)
     tab.load_preset()
     tab.sequence.add_step(ops.OUT_FARO)
     tab.sequence.select_range(0, 0)
     tab.open_group_dialog().ok()
     project = tmp_path / "project.json"
     tab.model.save(project)
-    app.model.load_preset("New deck order")
+    order = app.new_tab(SOLVER)
+    order.model.load_preset("New deck order")
     setup = tmp_path / "setup.json"
-    app.model.save(setup)
+    order.model.save(setup)
 
     fresh = ShuffleSolverApp(tk.Toplevel(app.root))
-    fresh.open_path(str(project))
-    assert fresh.notebook.select() == str(fresh.tracker.frame)
-    assert fresh.tracker.model.steps == tab.model.steps
-    assert fresh.tracker.sequence.step_list.get_children() == ("g1",)
-    assert fresh.tracker.deck_text.get("1.0", "end-1c") == deck.format_cards(tab.model.cards)
-    fresh.open_path(str(setup))
-    assert fresh.notebook.index(fresh.notebook.select()) == 0
-    assert fresh.model.slots == app.model.slots
+    tracker = fresh.open_path(str(project))
+    assert fresh.tabs.current.kind == TRACKER and fresh.tabs.current.title == "project"
+    assert tracker.model.steps == tab.model.steps
+    assert tracker.sequence.step_list.get_children() == ("g1",)
+    assert tracker.deck_text.get("1.0", "end-1c") == deck.format_cards(tab.model.cards)
+    opened = fresh.open_path(str(setup))
+    assert fresh.tabs.titles() == ["project", "setup"] and fresh.tabs.current.content is opened
+    assert opened.model.slots == order.model.slots
+
+
+def test_open_a_broken_file_leaves_no_tab(app, tmp_path, monkeypatch):
+    errors = []
+    monkeypatch.setattr(app_module.messagebox, "showerror", lambda *a, **k: errors.append(a))
+    bad = tmp_path / "bad.json"
+    for text in ("not json", '{"final": 7}'):
+        bad.write_text(text, encoding="utf-8")
+        assert app.open_path(str(bad)) is None
+        assert app.tabs.tabs == [] and "Could not load" in errors[-1][1]
+
+
+def test_save_names_the_tab_after_its_file(app, tmp_path, monkeypatch):
+    from shuffle_solver.ui import solver_tab
+    monkeypatch.setattr(solver_tab.messagebox, "showinfo", lambda *a, **k: None)
+    for module in (app_module, solver_tab):
+        monkeypatch.setattr(module.filedialog, "asksaveasfilename",
+                            lambda **k: str(tmp_path / "routine.json"))
+    tracker = app.new_tab(TRACKER)
+    tracker.load_preset()
+    app.save_current()
+    assert app.tabs.current.title == "routine" and (tmp_path / "routine.json").is_file()
+    app.new_tab(SOLVER, "Kept name")
+    app.save_current()
+    assert app.tabs.current.title == "Kept name"  # the user's own name stays
 
 
 def test_trainer_asks_checks_and_scores(app):
-    tab = app.trainer
+    tab = app.new_tab(TRAINER)
     assert tab.question_label.cget("text") == "No cards yet."
     assert str(tab.answer_entry.cget("state")) == "disabled"
     tab.deck_text.insert("1.0", "A-KH")
@@ -830,7 +978,7 @@ def test_trainer_asks_checks_and_scores(app):
 
 
 def test_stacking_tab_builds_a_stack_and_hands_it_on(app):
-    tab = app.stacking
+    tab = app.new_tab(STACKING)
     tab.players_var.set("2")
     assert tab.apply_players()
     assert list(tab.hand_vars) == ["Player 1", "Player 2", "Flop", "Turn", "River"]
@@ -850,14 +998,23 @@ def test_stacking_tab_builds_a_stack_and_hands_it_on(app):
     assert tab.hand_vars["Player 2"].get() == "AS, AH"
     assert str(tab.burns_check.cget("state")) == "disabled"
 
-    tab.send_to_final()
-    assert app.notebook.index(app.notebook.select()) == 0
-    assert app.model.slots[1].key == "AS" and app.model.slots[3].key == "AH"
-    assert app.badge.cget("text") == "PASS"
+    tab.send_to_final()  # no Starting Order tab open: one is opened
+    order = app.tabs.current.content
+    assert app.tabs.current.kind == SOLVER
+    assert order.model.slots[1].key == "AS" and order.model.slots[3].key == "AH"
+    assert order.badge.cget("text") == "PASS"
+
+    other = app.new_tab(SOLVER)
+    app.tabs.select(app.tabs.tabs[1])  # back to the first Starting Order tab
+    app.tabs.select(app.tabs.tabs[0])  # and the Stacking tab
+    tab.hand_vars["Player 1"].set("KS")
+    tab.send_to_final()  # goes to the Starting Order tab shown last
+    assert app.tabs.current.content is order and order.model.slots[0].key == "KS"
+    assert other.model.slots[0] is None
 
 
 def test_stacking_tab_rejects_bad_player_count(app):
-    tab = app.stacking
+    tab = app.new_tab(STACKING)
     tab.players_var.set("11")
     assert not tab.apply_players()
     assert "2 to 10" in tab.players_error.cget("text")

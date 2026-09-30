@@ -73,7 +73,7 @@ def tint(color, amount):
 
 
 def _configure_custom_styles(style):
-    # Dimmed hint text (Muted), and tinted fields for a duplicated card (Dup) and an
+    # Dimmed hint text (Muted), the large "New tab" button (Big), and tinted fields for a duplicated card (Dup) and an
     # unreadable entry (Bad). A theme switch rebuilds every style, so these are redone
     # after each one.
     c = style.colors
@@ -82,6 +82,21 @@ def _configure_custom_styles(style):
                     foreground=c.inputfg)
     style.configure("Bad.TCombobox", fieldbackground=_mix(c.warning, c.inputbg, 0.35),
                     foreground=c.inputfg)
+    style.configure("Big.TButton", font=("TkDefaultFont", 14), padding=(36, 14),
+                    background=c.primary, bordercolor=c.primary, foreground=c.selectfg)
+    style.map("Big.TButton", background=[("pressed", _mix(c.primary, c.fg, 0.75)),
+                                         ("active", _mix(c.primary, c.bg, 0.85))],
+              bordercolor=[("active", c.primary)], foreground=[("active", c.selectfg)])
+    # The tab strip (see tabs.py): tabs in a light tint of the text colour, the one on
+    # show in the theme's primary colour; a close button turns red under the mouse.
+    tab_bg = _mix(c.fg, c.bg, 0.12)
+    for name, bg, fg in (("Tab", tab_bg, c.fg), ("TabSelected", c.primary, c.selectfg),
+                         ("TabClose", c.danger, c.selectfg)):
+        style.configure(f"{name}.TFrame", background=bg)
+        style.configure(f"{name}.TLabel", background=bg, foreground=fg)
+    style.configure("TabAdd.TLabel", background=tab_bg, foreground=c.fg,
+                    font=("TkDefaultFont", 11), padding=(10, 1))
+    style.map("TabAdd.TLabel", background=[("hover", _mix(c.fg, c.bg, 0.22))])
 
 
 @dataclass
