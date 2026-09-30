@@ -84,7 +84,8 @@ iscc /DAppVersion=1.1.0 installer/CardApp.iss # -> dist/CardApp-Setup-1.1.0.exe
 
 1. **Final deck** – pick a preset (new deck order, Si Stebbins, Aronson,
    Mnemonica), type shorthand, or set cards slot by slot. Duplicates are
-   highlighted in red and missing cards are listed.
+   highlighted in red and missing cards are listed. Use `X` (or `X12` for
+   twelve) for indifferent cards whose identity doesn't matter.
 2. **Shuffle sequence** – add out-faros, in-faros, overhand runs, cuts and
    partial faros (pick which end the packet comes from and goes into under
    the partial faro buttons); reorder, duplicate, delete, or change X of the
@@ -127,6 +128,41 @@ then press **Find shuffles** to get numbered instructions that turn X into Y.
 
 Every answer is replayed forward and checked against Y (the PASS badge).
 
+### Stack Trainer tab
+
+Drill a memorised stack. Enter it as a preset or shorthand (any number of
+cards), pick the positions to train (e.g. 1 to 13, or **Whole stack**) and the
+kinds of question to ask:
+
+- What position is 7♥?
+- Which card is at position 12?
+- Which card comes before 7♥? / Which card comes after 7♥?
+
+Questions are random, but the same card is never asked about twice in a row
+unless the range holds only one card. A before/after question only asks about
+a card whose neighbour is also in the range. Type the answer (a number, or a
+card such as `7H` or `10S`) and press Enter. An answer that isn't a
+position or a card counts as a mistake, and so do Escape and **Don't know**. After each answer the tab shows the right answer. The
+session score (right / asked, accuracy, current and best streak) runs until
+you press **Reset score**.
+
+### Stacking tab
+
+Pick the poker hands you want dealt and get the deck order that deals them.
+Choose **5-card poker** or **Texas hold'em** and 2–10 players. Cards are dealt
+from the top, one at a time, round the table. Player 1 sits on the dealer's
+left and gets the first card, and the last player is the dealer. Hold'em deals
+two rounds of hole cards and then the flop, turn and river. By default a card
+is burned before each of the three. Turn burns off if you don't deal them.
+
+Type each hand as shorthand (`AS, KH`). `X`, or a hand left short, means any
+card can go there. A card wanted in two hands is flagged. The starting order
+lists every position and the hand it goes to. The other positions are X,
+or tick the box to fill them with the unused cards in new deck order. Copy
+the result, view it as cards, or press **Use as final deck →** to send it to
+the Starting Order tab. That tab then works out how to set up the deck so a
+shuffle sequence ends in this stack.
+
 ## Card shorthand
 
 Cards are RANK+SUIT: ranks `A 2-9 T J Q K` (`10` also works), suits `C H S D`.
@@ -144,8 +180,25 @@ Entries are comma-separated; whitespace and case don't matter.
 | ``ACHSD` `` / ``AC`HSD`` | only AD / only AC face up |
 | ``(ACHSD)` `` | all four aces face up |
 | `A-KCHSD` | clubs A–K, then hearts, spades, diamonds |
+| `X` | an indifferent card: any card, it doesn't matter which |
+| `X12` | 12 indifferent cards in a row (``X12` `` all face up) |
 
 Face-up is a display flag only; it never affects the shuffle math.
+
+Indifferent cards can go in the **Final deck**, the Stacking hands and the Free
+Tracking deck. In the Final deck, 52 cards with no
+duplicate is enough: the X cards stand in for the cards you left out. For
+example, `AS, X50, KH` asks only for the ace of spades on top and the king of
+hearts on the bottom. The starting order then shows X where any card will do,
+and View cards draws those slots as card backs.
+
+Free Tracking follows X cards through every step like any other card. Add
+cards takes `X5` to add five of them, and a rearrangement must keep as many X
+cards as the table has. X cards can't be taken out by name. **Name X cards**
+(Cards & packets) says which cards the X cards at a position are, e.g. when a
+faro would split at one. The name reaches back too: earlier tables and split
+notes show that card, back to where the X first appeared. X to Y and the Stack
+Trainer need every card named, so they reject X.
 
 ## Layout
 
@@ -154,11 +207,14 @@ shuffle_solver/
   shuffle_ops.py   pure position functions for each shuffle
   solver.py        composition, solve, forward simulation, round-trip verify
   path_finder.py   X to Y: shuffles from one order to another
+  stacking.py      poker deals: which card goes where, and the stack for a deal
   deck.py          Card, shorthand parser/formatter, validation, presets
   ui/model.py      toolkit-free app state (tested without a display)
   ui/app.py        Tkinter window and tabs
   ui/theme.py      ttkbootstrap theme choice and the app's custom styles
   ui/x_to_y.py     the X to Y tab
+  ui/trainer.py    the Stack Trainer tab
+  ui/stacking.py   the Stacking tab
   ui/card_viewer.py  "View cards" popups; images in ui/card_images/
 tests/             pytest + hypothesis
 ```

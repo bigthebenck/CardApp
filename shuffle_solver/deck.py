@@ -12,10 +12,14 @@ Shorthand summary (whitespace ignored, case-insensitive):
     (A-8, 9-K)C   one suit for several ranks/ranges
     (A-8, 9-K)`C  ... all face up (backtick right after the closing paren)
     (ACHSD)`      whole chain of full cards face up
+    X             an indifferent card: any card, it doesn't matter which
+    X12           twelve indifferent cards in a row (X12` all face up)
 
 Entries are separated by commas (or newlines). Parentheses never nest. Inside
 a group every item is either a bare rank/range (the suit comes after the
 closing paren) or a full card chain (no suit after the paren) -- not a mix.
+Indifferent cards are only accepted when ``parse_cards`` is asked to allow
+them, and never inside parentheses.
 """
 
 from dataclasses import dataclass
@@ -26,6 +30,8 @@ SUIT_SYMBOLS = {"C": "♣", "H": "♥", "S": "♠", "D": "♦"}
 SUIT_NAMES = {"C": "clubs", "H": "hearts", "S": "spades", "D": "diamonds"}
 RANK_NAMES = {"A": "ace", "T": "10", "J": "jack", "Q": "queen", "K": "king"}
 BACKTICKS = "`‵"  # plain backtick, plus the reversed prime some fonts render it as
+INDIFFERENT = "X"  # rank of an indifferent card, which has no suit
+MAX_INDIFFERENT_RUN = 999  # largest count accepted in "X12" shorthand
 
 _SYMBOL_TO_SUIT = {v: k for k, v in SUIT_SYMBOLS.items()}
 _SYMBOL_TO_SUIT.update({"♤": "S", "♡": "H", "♢": "D", "♧": "C"})
@@ -38,6 +44,10 @@ class Card:
     face_up: bool = False
 
     def __post_init__(self):
+        if self.rank == INDIFFERENT:
+            if self.suit:
+                raise ValueError("an indifferent card has no suit")
+            return
         if self.rank not in RANKS:
             raise ValueError(f"bad rank {self.rank!r}")
         if self.suit not in SUITS:
@@ -48,14 +58,23 @@ class Card:
         """Identity ignoring the face-up display flag."""
         return self.rank + self.suit
 
+    @property
+    def indifferent(self):
+        """True for a stand-in for any card (all indifferent cards are equal)."""
+        return self.rank == INDIFFERENT
+
     def with_face_up(self, face_up):
         return Card(self.rank, self.suit, face_up)
 
     def pretty(self):
+        if self.indifferent:
+            return str(self)
         rank = "10" if self.rank == "T" else self.rank
         return rank + SUIT_SYMBOLS[self.suit] + ("`" if self.face_up else "")
 
     def name(self):
+        if self.indifferent:
+            return "any card" + (" (face up)" if self.face_up else "")
         rank = RANK_NAMES.get(self.rank, self.rank)
         return f"{rank} of {SUIT_NAMES[self.suit]}" + (" (face up)" if self.face_up else "")
 
@@ -64,6 +83,10 @@ class Card:
 
 
 FULL_DECK_KEYS = [r + s for s in SUITS for r in RANKS]
+
+
+def indifferent_card(face_up=False):
+    return Card(INDIFFERENT, "", face_up)
 
 
 # --- tokenizer ------------------------------------------------------------------
@@ -76,8 +99,8 @@ class ParseError(ValueError):
         super().__init__(message + where)
 
 
-RANK, SUIT, DASH, COMMA, LPAREN, RPAREN, TICK, END = (
-    "rank", "suit", "-", ",", "(", ")", "`", "end",
+RANK, SUIT, DASH, COMMA, LPAREN, RPAREN, TICK, INDIFF, END = (
+    "rank", "suit", "-", ",", "(", ")", "`", "indifferent", "end",
 )
 
 
@@ -102,6 +125,12 @@ def _tokenize(text):
         elif ch == "1" and i + 1 < len(text) and text[i + 1] == "0":
             toks.append(_Tok(RANK, "T", i))
             i += 2
+        elif up == INDIFFERENT:
+            j = i + 1
+            while j < len(text) and text[j] in "0123456789":  # the count in "X12"
+                j += 1
+            toks.append(_Tok(INDIFF, INDIFFERENT + text[i + 1:j], i))
+            i = j
         elif up in RANKS:
             toks.append(_Tok(RANK, up, i))
             i += 1
@@ -143,9 +172,10 @@ class _RankItem:
 
 
 class _Parser:
-    def __init__(self, text):
+    def __init__(self, text, allow_indifferent=False):
         self.toks = _tokenize(text)
         self.i = 0
+        self.allow_indifferent = allow_indifferent
 
     @property
     def tok(self):
@@ -189,7 +219,19 @@ class _Parser:
             return self.group()
         if self.tok.type == RANK:
             return self.chain()
+        if self.tok.type == INDIFF:
+            return self.indifferent()
         raise ParseError(f"expected a card, range or '(' but found {self._found(self.tok)}", self.tok.pos)
+
+    def indifferent(self):
+        """X, or X12 for twelve; a trailing backtick flags them all face up."""
+        tok = self.take(INDIFF)
+        if not self.allow_indifferent:
+            raise ParseError("indifferent cards (X) can't be used here", tok.pos)
+        count = int(tok.value[1:]) if len(tok.value) > 1 else 1
+        if not 1 <= count <= MAX_INDIFFERENT_RUN:
+            raise ParseError(f"the count after X must be 1 to {MAX_INDIFFERENT_RUN}", tok.pos)
+        return [indifferent_card(self.accept(TICK) is not None)] * count
 
     def rank_spec(self):
         first = self.take(RANK).value
@@ -260,9 +302,13 @@ class _Parser:
         ]
 
 
-def parse_cards(text):
-    """Expand shorthand text into a list of Cards (no completeness check)."""
-    return _Parser(text).parse()
+def parse_cards(text, allow_indifferent=False):
+    """Expand shorthand text into a list of Cards (no completeness check).
+
+    Indifferent cards (``X``, ``X12``) are a parse error unless
+    ``allow_indifferent`` is set.
+    """
+    return _Parser(text, allow_indifferent).parse()
 
 
 # --- formatting -----------------------------------------------------------------------
@@ -270,13 +316,22 @@ def parse_cards(text):
 
 def format_cards(cards, compress=True):
     """Shorthand for a card list. With ``compress``, runs of three or more
-    consecutive same-suit, same-facing ranks become ranges (e.g. ``A-KC``).
-    ``parse_cards(format_cards(x)) == x`` always holds."""
+    consecutive same-suit, same-facing ranks become ranges (e.g. ``A-KC``),
+    and runs of two or more same-facing indifferent cards become ``X<count>``.
+    ``parse_cards(format_cards(x), allow_indifferent=True) == x`` always holds."""
     parts = []
     i = 0
     while i < len(cards):
         c = cards[i]
         j = i + 1
+        if c.indifferent:
+            while compress and j < len(cards) and cards[j] == c:
+                j += 1
+            count = j - i
+            parts.append(INDIFFERENT + (str(count) if count > 1 else "")
+                         + ("`" if c.face_up else ""))
+            i = j
+            continue
         if compress and j < len(cards):
             step = _rank_step(c, cards[j])
             if step:
@@ -293,7 +348,7 @@ def format_cards(cards, compress=True):
 
 
 def _rank_step(a, b):
-    if a.suit != b.suit or a.face_up != b.face_up:
+    if a.suit != b.suit or a.face_up != b.face_up or a.indifferent or b.indifferent:
         return 0
     d = RANKS.index(b.rank) - RANKS.index(a.rank)
     return d if d in (1, -1) else 0
@@ -312,10 +367,12 @@ class DeckReport:
     count: int
     duplicates: list  # card keys appearing more than once, in first-seen order
     missing: list  # card keys absent, in new-deck (suit, rank) order
+    indifferent: int = 0  # indifferent cards, each standing in for a missing one
 
     @property
     def ok(self):
-        return self.count == 52 and not self.duplicates and not self.missing
+        return (self.count == 52 and not self.duplicates
+                and len(self.missing) == self.indifferent)
 
     def messages(self):
         out = []
@@ -323,19 +380,24 @@ class DeckReport:
             out.append(f"{self.count} cards entered; a full deck needs exactly 52.")
         if self.duplicates:
             out.append("Duplicated: " + ", ".join(self.duplicates))
-        if self.missing:
+        if self.missing and not self.indifferent:  # else the X cards stand for them
             out.append("Missing: " + ", ".join(self.missing))
         return out
 
 
 def validate_deck(cards):
-    seen, dups = set(), []
+    """Count, duplicates and missing cards; indifferent cards are never duplicates."""
+    seen, dups, indifferent = set(), [], 0
     for c in cards:
+        if c.indifferent:
+            indifferent += 1
+            continue
         if c.key in seen and c.key not in dups:
             dups.append(c.key)
         seen.add(c.key)
     missing = [k for k in FULL_DECK_KEYS if k not in seen]
-    return DeckReport(count=len(cards), duplicates=dups, missing=missing)
+    return DeckReport(count=len(cards), duplicates=dups, missing=missing,
+                      indifferent=indifferent)
 
 
 def parse_deck(text):

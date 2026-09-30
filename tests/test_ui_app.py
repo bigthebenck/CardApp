@@ -183,7 +183,7 @@ def test_copy_shorthand_parses_back(app):
 
 def test_tabs_present(app):
     tabs = [app.notebook.tab(t, "text") for t in app.notebook.tabs()]
-    assert tabs == ["Starting Order", "X to Y", "Free Tracking"]
+    assert tabs == ["Starting Order", "X to Y", "Free Tracking", "Stack Trainer", "Stacking"]
 
 
 def test_x_to_y_tab_finds_shuffles(app):
@@ -700,6 +700,17 @@ def test_tracker_card_steps_and_the_odd_pile_rule(app):
     assert shown(tab, "after")[1].startswith("Step 2 can't be done")
 
 
+def test_tracker_names_x_cards(app):
+    tab = app.tracker
+    tab.model.set_from_text("AC, X3")
+    tab.cards_var.set("KS")
+    tab.name_pos_var.set("1")
+    assert tab.name_cards() is False and "not an X card" in tab.sequence.seq_error.cget("text")
+    tab.name_pos_var.set("3")
+    assert tab.name_cards()
+    assert [str(c) for c in tab.model.states[-1].pile("A").cards] == ["AC", "X", "KS", "X"]
+
+
 def test_tracker_rearrange_dialog_adds_and_edits_a_step(app):
     tab = app.tracker
     tab.load_preset()
@@ -782,3 +793,72 @@ def test_open_puts_each_kind_of_file_in_its_tab(app, tmp_path):
     fresh.open_path(str(setup))
     assert fresh.notebook.index(fresh.notebook.select()) == 0
     assert fresh.model.slots == app.model.slots
+
+
+def test_trainer_asks_checks_and_scores(app):
+    tab = app.trainer
+    assert tab.question_label.cget("text") == "No cards yet."
+    assert str(tab.answer_entry.cget("state")) == "disabled"
+    tab.deck_text.insert("1.0", "A-KH")
+    tab.frame.update()
+    tab.apply_text()
+    assert tab.last_var.get() == "13" and tab.range_total.cget("text") == "of 13"
+    tab.first_var.set("2")
+    tab.last_var.set("5")
+    assert tab.apply_range() and (tab.model.first, tab.model.last) == (2, 5)
+    q = tab.model.question
+    assert tab.question_label.cget("text") == q.prompt()
+    tab.answer_var.set(str(q.answer) if q.kind == "position_of" else q.answer.pretty())
+    assert tab.submit().correct
+    assert tab.feedback.cget("text").startswith("✓") and tab.answer_var.get() == ""
+    assert tab.give_up() is not None
+    assert tab.feedback.cget("text").startswith("✗")
+    assert tab.stats_label.cget("text").startswith("Session: 1 / 2 right (50%)")
+    tab.answer_var.set("")
+    assert tab.submit() is None and tab.model.asked == 2
+    assert tab.feedback.cget("text").startswith("⚠")
+    tab.answer_var.set("nonsense")
+    assert not tab.submit().correct and tab.model.asked == 3
+    assert tab.feedback.cget("text").startswith("✗ You said nonsense.")
+    tab.first_var.set("9")
+    assert not tab.apply_range() and tab.range_error.cget("text")
+    tab.whole_deck()
+    assert (tab.model.first, tab.model.last) == (1, 13) and not tab.range_error.cget("text")
+    tab.model.reset_stats()
+    assert tab.stats_label.cget("text") == "Session: no answers yet"
+
+
+
+def test_stacking_tab_builds_a_stack_and_hands_it_on(app):
+    tab = app.stacking
+    tab.players_var.set("2")
+    assert tab.apply_players()
+    assert list(tab.hand_vars) == ["Player 1", "Player 2", "Flop", "Turn", "River"]
+    tab.hand_vars["Player 2"].set("AS, AH")
+    tab.hand_vars["Flop"].set("AD, AC, 2S")
+    text = tab.stack_text.get("1.0", "end")
+    assert " 2. A♠   Player 2 (dealer), card 1" in text
+    assert " 6. A♦   Flop, card 1" in text
+
+    tab.hand_vars["Turn"].set("AS")
+    assert "Wanted twice" in tab.summary.cget("text")
+    assert str(tab.final_button.cget("state")) == "disabled"
+    tab.hand_vars["Turn"].set("")
+
+    tab.model.set_game("five_card")
+    assert list(tab.hand_vars) == ["Player 1", "Player 2"]
+    assert tab.hand_vars["Player 2"].get() == "AS, AH"
+    assert str(tab.burns_check.cget("state")) == "disabled"
+
+    tab.send_to_final()
+    assert app.notebook.index(app.notebook.select()) == 0
+    assert app.model.slots[1].key == "AS" and app.model.slots[3].key == "AH"
+    assert app.badge.cget("text") == "PASS"
+
+
+def test_stacking_tab_rejects_bad_player_count(app):
+    tab = app.stacking
+    tab.players_var.set("11")
+    assert not tab.apply_players()
+    assert "2 to 10" in tab.players_error.cget("text")
+    assert tab.model.players == 4

@@ -12,6 +12,7 @@ from shuffle_solver.deck import (
     expand_ranks,
     format_cards,
     format_numbered,
+    indifferent_card,
     parse_cards,
     parse_deck,
     validate_deck,
@@ -153,6 +154,59 @@ def test_empty_input():
     assert parse_cards("  , ") == []
 
 
+# --- indifferent cards ---------------------------------------------------------
+
+X = indifferent_card()
+
+
+def test_indifferent_card_and_count():
+    assert parse_cards("AC, X, x3, KH", allow_indifferent=True) ==         [Card("A", "C"), X, X, X, X, Card("K", "H")]
+    assert parse_cards("X12", allow_indifferent=True) == [X] * 12
+
+
+def test_indifferent_face_up_flags_the_whole_run():
+    assert parse_cards("X2`", allow_indifferent=True) == [indifferent_card(True)] * 2
+
+
+def test_indifferent_card_text():
+    assert str(X) == X.pretty() == "X" and X.name() == "any card"
+    assert X.indifferent and not Card("A", "C").indifferent
+
+
+@pytest.mark.parametrize("text", ["X", "AC, X3"])
+def test_indifferent_rejected_unless_allowed(text):
+    with pytest.raises(ParseError, match="indifferent"):
+        parse_cards(text)
+
+
+@pytest.mark.parametrize("text", ["X0", "X1000", "(X, AC)", "(A, X)C", "XC", "X3X"])
+def test_indifferent_parse_errors(text):
+    with pytest.raises(ParseError):
+        parse_cards(text, allow_indifferent=True)
+
+
+def test_deck_with_indifferent_cards_is_valid():
+    report = validate_deck(parse_cards("AS, X50, KH", allow_indifferent=True))
+    assert report.ok and report.indifferent == 50 and report.messages() == []
+
+
+def test_indifferent_cards_are_not_duplicates():
+    report = validate_deck(parse_cards("X2, A-KCHS, A-JD", allow_indifferent=True))
+    assert report.ok and report.duplicates == []
+
+
+def test_short_deck_with_indifferent_cards():
+    report = validate_deck(parse_cards("AS, X40", allow_indifferent=True))
+    assert not report.ok
+    assert report.messages() == ["41 cards entered; a full deck needs exactly 52."]
+
+
+def test_format_indifferent_runs():
+    cards = parse_cards("X, AC, X, X, X`, X`, 2C", allow_indifferent=True)
+    assert format_cards(cards) == "X, AC, X2, X2`, 2C"
+    assert format_cards(cards, compress=False) == "X, AC, X, X, X`, X`, 2C"
+
+
 # --- errors --------------------------------------------------------------------
 
 @pytest.mark.parametrize(
@@ -236,12 +290,19 @@ def test_format_numbered():
 
 
 card_strategy = st.builds(Card, st.sampled_from(RANKS), st.sampled_from(SUITS), st.booleans())
+card_or_x = st.one_of(card_strategy, st.builds(indifferent_card, st.booleans()))
 
 
 @settings(max_examples=300)
 @given(st.lists(card_strategy, max_size=60), st.booleans())
 def test_format_parse_round_trip(cards, compress):
     assert parse_cards(format_cards(cards, compress)) == cards
+
+
+@settings(max_examples=300)
+@given(st.lists(card_or_x, max_size=60), st.booleans())
+def test_format_parse_round_trip_with_indifferent(cards, compress):
+    assert parse_cards(format_cards(cards, compress), allow_indifferent=True) == cards
 
 
 # --- presets -------------------------------------------------------------------

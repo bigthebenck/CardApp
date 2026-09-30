@@ -106,7 +106,8 @@ class TrackerTab:
         tb.Button(top, text="Clear", command=lambda: self.model.set_cards([])).pack(
             side=tk.RIGHT)
 
-        tb.Label(frame, text="Shorthand, any number of cards (e.g.  A-KH, A-KC, K-AD, K-AS):"
+        tb.Label(frame, text="Shorthand, any number of cards (e.g.  A-KH, A-KC, K-AD, K-AS;\n"
+                           "X = any card, X12 = twelve of them):"
                  ).pack(anchor=tk.W, pady=(6, 0))
         self.deck_text = tb.Text(frame, height=3, width=44, wrap=tk.WORD, font=MONO, undo=True)
         self.deck_text.pack(fill=tk.X)
@@ -149,7 +150,7 @@ class TrackerTab:
         self.cards_var = tk.StringVar()
         tb.Entry(row, textvariable=self.cards_var, font=MONO, width=22).pack(
             side=tk.LEFT, padx=4, fill=tk.X, expand=True)
-        tb.Label(row, text="e.g. AC AH AS AD", style="Muted.TLabel").pack(side=tk.LEFT)
+        tb.Label(row, text="e.g. AC AH AS AD, or X5 to add", style="Muted.TLabel").pack(side=tk.LEFT)
 
         row = tb.Frame(tab)
         row.pack(fill=tk.X, pady=(2, 0))
@@ -166,6 +167,17 @@ class TrackerTab:
         tb.Spinbox(row, from_=1, to=200, width=4, textvariable=self.add_pos_var).pack(
             side=tk.LEFT)
         tb.Label(row, text="(1 = top)", style="Muted.TLabel").pack(side=tk.LEFT, padx=4)
+
+        row = tb.Frame(tab)
+        row.pack(fill=tk.X, pady=(2, 0))
+        tb.Button(row, text="Name X cards", command=self.name_cards).pack(side=tk.LEFT)
+        tb.Label(row, text="in the shuffle pile from position").pack(side=tk.LEFT, padx=(6, 2))
+        self.name_pos_var = tk.StringVar(value="1")
+        tb.Spinbox(row, from_=1, to=200, width=4, textvariable=self.name_pos_var).pack(
+            side=tk.LEFT)
+        tb.Label(tab, text="Turns the X cards there into the Cards box's cards, in earlier "
+                           "steps too, e.g. to know the card at a faro's split.", style="Muted.TLabel",
+                 wraplength=330).pack(anchor=tk.W)
 
         row = tb.Frame(tab)
         row.pack(fill=tk.X, pady=(8, 0))
@@ -247,7 +259,8 @@ class TrackerTab:
         if not text:
             raise ValueError("type the cards in the Cards box")
         # Spaces separate cards here as well as commas: "AC AH" means "AC, AH".
-        return tuple(deck.parse_cards(", ".join(re.split(r"[\s,]+", text))))
+        return tuple(deck.parse_cards(", ".join(re.split(r"[\s,]+", text)),
+                                      allow_indifferent=True))
 
     def take_out(self, mode):
         """Take the Cards box's cards out: as one pile, a pile each, or for good."""
@@ -264,6 +277,15 @@ class TrackerTab:
         except ValueError as exc:
             return self._refuse(exc)
         return self.sequence.add(tracking.AddCards(cards, self.model.target_pile, position))
+
+    def name_cards(self):
+        """Turn the X cards at the chosen position into the Cards box's cards."""
+        try:
+            cards = self._named_cards()
+            position = int(self.name_pos_var.get())
+        except ValueError as exc:
+            return self._refuse(exc)
+        return self.sequence.add(tracking.NameCards(cards, self.model.target_pile, position))
 
     def split(self):
         try:
@@ -457,7 +479,8 @@ class RearrangeDialog(_Dialog):
             "and name them with their letter, e.g.\n"
             "    A: 2-KC, AC |\n    B: 2-KH, AH\n"
             "Without names, piles keep the names of the piles already on the table, in "
-            "order. It must hold exactly the cards on the table; a ` marks a face-up card.")
+            "order. It must hold exactly the cards on the table, with as many X cards as "
+            "before; a ` marks a face-up card.")
 
     def __init__(self, tab, edit=None):
         super().__init__(tab, "Edit rearrangement" if edit is not None else "Rearrange")

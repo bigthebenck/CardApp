@@ -1,9 +1,12 @@
+import random
+
 import pytest
 
 from shuffle_solver import deck, tracking
 from shuffle_solver import shuffle_ops as ops
 from shuffle_solver.solver import Step, simulate
-from shuffle_solver.ui.model import (AppModel, PathOutcome, TrackerModel, XToYModel,
+from shuffle_solver.ui.model import (AFTER, BEFORE, CARD_AT, POSITION_OF, AppModel,
+                                     PathOutcome, TrackerModel, TrainerModel, XToYModel,
                                      cancelled_outcome, format_columns, format_instructions,
                                      format_preview, format_table, search_outcome)
 
@@ -111,12 +114,38 @@ def test_breaking_the_deck_clears_the_stale_result(model):
 def test_shorthand_error_invalidates_result_until_fixed(model):
     model.add_step(Step(ops.OUT_FARO))
     err = model.set_final_from_text("A-KH, A-KC, K-AD, K-AX")
-    assert err and "unexpected character" in err
+    assert err and "expected a suit letter" in err
     assert model.result.status == "invalid_deck"
     assert not model.result.has_answer
     assert model.slots == NDO  # grid untouched
     assert model.set_final_from_text("A-KH, A-KC, K-AD, K-AS") is None
     assert model.result.status == "ok"
+
+
+def test_indifferent_cards_in_final_deck():
+    m = AppModel()
+    assert m.set_final_from_text("AS, X50, KH") is None
+    m.add_step(Step(ops.OUT_FARO))
+    res = m.result
+    assert res.status == "ok" and res.verified
+    assert res.start[0] == deck.Card("A", "S") and res.start[-1] == deck.Card("K", "H")
+    assert sum(c.indifferent for c in res.start) == 50
+    assert m.final_text() == "AS, X50, KH"
+
+
+def test_indifferent_cards_saved_and_loaded(tmp_path):
+    m = AppModel()
+    m.set_final_from_text("X10, A-KC, K-AD, K-AS, X3")
+    path = tmp_path / "setup.json"
+    m.save(path)
+    m2 = AppModel()
+    m2.load(path)
+    assert m2.slots == m.slots
+
+
+def test_x_to_y_rejects_indifferent_cards():
+    m = XToYModel()
+    assert "indifferent" in m.set_from_text("end", "AS, X51")
 
 
 def test_too_many_cards_is_an_error():
@@ -516,3 +545,145 @@ def test_tracker_and_setup_files_are_not_mixed_up():
     with pytest.raises(ValueError, match="aren't there"):
         tracker.load_dict(bad)
     assert tracker.cards == NDO  # a failed load leaves the tab as it was
+
+
+# --- stack trainer ---------------------------------------------------------------------
+
+
+def trainer(preset="Mnemonica (Tamariz)", seed=1):
+    m = TrainerModel(random.Random(seed))
+    m.load_preset(preset)
+    return m
+
+
+def test_trainer_waits_for_a_deck():
+    m = TrainerModel()
+    assert m.question is None and m.unavailable_reason() == "No cards yet."
+    m.set_from_text("AC, AC")
+    assert m.question is None and "Duplicated: AC" in m.unavailable_reason()
+    m.set_from_text("AC, (")
+    assert m.question is None and m.error
+
+
+def test_trainer_questions_match_the_stack():
+    m = trainer()
+    cards = deck.PRESETS["Mnemonica (Tamariz)"]
+    seen = set()
+    for _ in range(200):
+        q = m.question
+        seen.add(q.kind)
+        assert cards[q.position - 1].key == q.card.key
+        if q.kind == POSITION_OF:
+            assert q.answer == q.position
+        else:
+            offset = {CARD_AT: 0, BEFORE: -1, AFTER: 1}[q.kind]
+            assert q.answer == cards[q.position - 1 + offset]
+        m.give_up()
+    assert seen == {POSITION_OF, CARD_AT, BEFORE, AFTER}
+
+
+def test_trainer_stays_in_range_and_never_repeats_a_card():
+    m = trainer()
+    m.set_range(5, 8)
+    last = None
+    for _ in range(200):
+        q = m.question
+        assert 5 <= q.position <= 8
+        if q.kind == BEFORE:
+            assert q.position > 5  # the card before is in the range too
+        if q.kind == AFTER:
+            assert q.position < 8
+        assert q.position != last
+        last = q.position
+        m.give_up()
+
+
+def test_trainer_repeats_only_when_unavoidable():
+    m = trainer()
+    m.set_range(10, 10)
+    assert {m.give_up().question.position for _ in range(5)} == {10}
+    assert m.question.kind in (POSITION_OF, CARD_AT)  # no neighbour in a range of one
+    for kind in (POSITION_OF, CARD_AT):
+        m.set_kind(kind, False)
+    assert m.question is None and "range of one card" in m.unavailable_reason()
+    m.set_range(10, 11)  # before 11 and after 10 are the only questions left
+    positions = [m.give_up().question.position for _ in range(20)]
+    assert all(a != b for a, b in zip(positions, positions[1:]))
+
+
+def test_trainer_checks_answers_and_keeps_score():
+    m = trainer()
+    q = m.question
+    good = str(q.answer) if q.kind == POSITION_OF else q.answer.pretty()
+    assert m.answer(good).correct
+    q = m.question
+    wrong = "99" if q.kind == POSITION_OF else ("AC" if q.answer.key != "AC" else "2C")
+    outcome = m.answer(wrong)
+    assert not outcome.correct and outcome.given == wrong and outcome.question == q
+    assert m.give_up().given == ""
+    assert (m.asked, m.correct, m.streak, m.best_streak) == (3, 1, 0, 1)
+    assert m.accuracy == pytest.approx(1 / 3)
+    m.reset_stats()
+    assert (m.asked, m.correct, m.accuracy, m.last_outcome) == (0, 0, None, None)
+
+
+def test_trainer_reads_cards_any_way_and_counts_junk_as_wrong():
+    m = trainer()
+    m.set_kind(POSITION_OF, False)
+    q = m.question
+    r, s = q.answer.rank, q.answer.suit
+    for text in (r + s, (r + s).lower(), f" {q.answer.pretty()} ",
+                 ("10" + s) if r == "T" else r + s):
+        assert q.check(text)
+    for blank in ("", "   "):
+        with pytest.raises(ValueError):
+            m.answer(blank)
+    assert m.question == q and m.asked == 0  # a blank answer isn't scored
+    for junk in ("banana", "AC, AH"):
+        outcome = m.answer(junk)
+        assert not outcome.correct and outcome.given == junk
+    m.set_kind(POSITION_OF, True)
+    for kind in (CARD_AT, BEFORE, AFTER):
+        m.set_kind(kind, False)
+    assert not m.answer("seven").correct
+    assert (m.asked, m.correct, m.streak) == (3, 0, 0)
+
+
+def test_trainer_range_follows_the_deck():
+    m = TrainerModel()
+    with pytest.raises(ValueError):
+        m.set_range(1, 5)
+    m.load_preset("New deck order")
+    assert (m.first, m.last) == (1, 52)
+    m.set_from_text("A-KH")  # a whole-deck range shrinks with the deck
+    assert (m.first, m.last) == (1, 13)
+    m.set_range(3, 6)
+    m.load_preset("Aronson stack")  # any other range is kept
+    assert (m.first, m.last) == (3, 6)
+    m.set_from_text("A-3H")
+    assert (m.first, m.last) == (3, 3)
+    for bad in ((0, 2), (3, 2), (1, 4)):
+        with pytest.raises(ValueError):
+            m.set_range(*bad)
+    m.whole_deck()
+    assert (m.first, m.last) == (1, 3)
+
+
+def test_trainer_ignores_face_up_flags():
+    m = TrainerModel(random.Random(0))
+    m.set_from_text("AC`, 2C, 3C")
+    assert not any(c.face_up for c in m.cards)
+
+
+
+def test_tracker_takes_indifferent_cards_and_saves_them(tmp_path):
+    m = TrackerModel()
+    assert m.set_from_text("A-KH, X6, X`") is None
+    assert m.deck_problems() == [] and len(m.cards) == 20
+    m.add_step(Step(ops.OUT_FARO))
+    m.add_step(tracking.NameCards(deck.parse_cards("5S"), "A", 8))
+    path = tmp_path / "t.json"
+    m.save(path)
+    loaded = TrackerModel()
+    loaded.load(path)
+    assert loaded.cards == m.cards and loaded.states[-1] == m.states[-1]

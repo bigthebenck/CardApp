@@ -7,9 +7,10 @@ here and no Tk, so it is unit-tested directly.
 """
 
 import json
+import random
 from dataclasses import dataclass, field
 
-from .. import deck, path_finder, solver, tracking
+from .. import deck, path_finder, solver, stacking, tracking
 from .. import shuffle_ops as ops
 
 DECK_SIZE = ops.DECK_SIZE
@@ -154,7 +155,7 @@ class AppModel(StepList):
         message is returned (None on success).
         """
         try:
-            self.set_final_cards(deck.parse_cards(text))
+            self.set_final_cards(deck.parse_cards(text, allow_indifferent=True))
         except ValueError as exc:  # includes ParseError
             if self.input_error != str(exc):
                 self.input_error = str(exc)
@@ -222,7 +223,7 @@ class AppModel(StepList):
             if text is None:
                 slots.append(None)
             else:
-                cards = deck.parse_cards(text)
+                cards = deck.parse_cards(text, allow_indifferent=True)
                 if len(cards) != 1:
                     raise ValueError(f"bad card {text!r} in saved file")
                 slots.append(cards[0])
@@ -516,7 +517,7 @@ class TrackerModel(StepList):
     def set_from_text(self, text):
         """Parse shorthand into the deck; returns the error message or None."""
         try:
-            self.set_cards(deck.parse_cards(text))
+            self.set_cards(deck.parse_cards(text, allow_indifferent=True))
         except ValueError as exc:
             if self.error != str(exc):
                 self.error = str(exc)
@@ -531,7 +532,7 @@ class TrackerModel(StepList):
         """Why the deck can't be tracked (empty list when it can).
 
         Any number of cards will do, since steps can add and remove them, but
-        each card only once.
+        each card only once (indifferent cards, X, as many as you like).
         """
         if not self.cards:
             return ["No cards yet."]
@@ -737,7 +738,7 @@ TRACKER_FILE_TYPE = "free_tracking"
 
 
 def _card(text):
-    cards = deck.parse_cards(text)
+    cards = deck.parse_cards(text, allow_indifferent=True)
     if len(cards) != 1:
         raise ValueError(f"bad card {text!r} in saved file")
     return cards[0]
@@ -754,7 +755,7 @@ def _step_to_dict(step):
                 "pile": step.pile}
     if isinstance(step, tracking.TakeOut):
         return {"kind": step.kind, "cards": [str(c) for c in step.cards], "mode": step.mode}
-    if isinstance(step, tracking.AddCards):
+    if isinstance(step, (tracking.AddCards, tracking.NameCards)):
         return {"kind": step.kind, "cards": [str(c) for c in step.cards], "pile": step.pile,
                 "position": step.position}
     if isinstance(step, tracking.Split):
@@ -775,6 +776,9 @@ def _step_from_dict(d):
         return tracking.TakeOut(_cards_of(d["cards"]), d.get("mode", "pile"))
     if kind == "add_cards":
         return tracking.AddCards(_cards_of(d["cards"]), d.get("pile"), int(d.get("position", 1)))
+    if kind == "name_cards":
+        return tracking.NameCards(_cards_of(d["cards"]), d.get("pile", tracking.START_PILE),
+                                  int(d.get("position", 1)))
     if kind == "split":
         return tracking.Split(d["pile"], tuple(int(s) for s in d["sizes"]))
     if kind == "place":
@@ -819,3 +823,352 @@ def format_columns(cards, rows=13):
                  for c, col in enumerate(cols) if r < len(col)]
         lines.append("  ".join(cells).rstrip())
     return "\n".join(lines)
+
+
+# --- stack trainer ---------------------------------------------------------------------
+
+POSITION_OF, CARD_AT, BEFORE, AFTER = "position_of", "card_at", "before", "after"
+_OFFSETS = {BEFORE: -1, AFTER: 1}  # where the answer card sits from the card asked about
+QUESTION_KINDS = {  # kind -> label for the choice of what to ask
+    POSITION_OF: "Position of a card",
+    CARD_AT: "Card at a position",
+    BEFORE: "Card before a card",
+    AFTER: "Card after a card",
+}
+
+
+@dataclass(frozen=True)
+class Question:
+    kind: str
+    position: int  # 1-based position of the card asked about
+    card: deck.Card  # the card at ``position``
+    answer: object  # a position (int) or a Card
+
+    def prompt(self):
+        if self.kind == POSITION_OF:
+            return f"What position is {self.card.pretty()}?"
+        if self.kind == CARD_AT:
+            return f"Which card is at position {self.position}?"
+        where = "before" if self.kind == BEFORE else "after"
+        return f"Which card comes {where} {self.card.pretty()}?"
+
+    def answer_text(self):
+        return str(self.answer) if self.kind == POSITION_OF else self.answer.pretty()
+
+    def check(self, text):
+        """Whether ``text`` answers the question; ValueError if it isn't a position/card."""
+        text = text.strip()
+        if self.kind == POSITION_OF:
+            try:
+                return int(text) == self.answer
+            except ValueError:
+                raise ValueError("type a position, e.g. 12") from None
+        cards = deck.parse_cards(text) if text else []
+        if len(cards) != 1:
+            raise ValueError("type one card, e.g. 7H or 10S")
+        return cards[0].key == self.answer.key
+
+
+@dataclass(frozen=True)
+class Outcome:
+    question: Question
+    given: str  # what was typed; empty for a give-up
+    correct: bool
+
+
+class TrainerModel:
+    """Quizzes a stack with random questions about the cards in a range of it.
+
+    The deck is any number of cards, each once. Questions are about the cards at
+    positions ``first``..``last`` (1-based, inclusive); a before/after question
+    only asks about a card whose neighbour is in the range too. The same card is
+    not asked about twice in a row when the range holds another. The session
+    score counts every answer and every give-up until it is reset.
+    """
+
+    def __init__(self, rng=None):
+        self.cards = []
+        self.error = None  # shorthand parse error
+        self.first, self.last = 1, 0
+        self.kinds = set(QUESTION_KINDS)
+        self.question = None
+        self.last_outcome = None
+        self.asked = self.correct = self.streak = self.best_streak = 0
+        self._rng = rng or random.Random()
+        self._listeners = []
+
+    def subscribe(self, callback):
+        self._listeners.append(callback)
+
+    def _changed(self, new_question=True):
+        if new_question:
+            self.next_question()
+        for cb in list(self._listeners):
+            cb(self)
+
+    # --- the deck and the range ------------------------------------------------------
+
+    def set_cards(self, cards):
+        cards = [c.with_face_up(False) for c in cards]
+        if cards == self.cards and not self.error:
+            return
+        old = len(self.cards)
+        self.cards, self.error = cards, None
+        # A range over the whole deck follows its length; any other is kept while it fits.
+        if self.last in (0, old) or self.last > len(cards):
+            self.last = len(cards)
+        self.first = min(self.first, max(self.last, 1))
+        self._changed()
+
+    def set_from_text(self, text):
+        """Parse shorthand into the deck; returns the error message or None."""
+        try:
+            self.set_cards(deck.parse_cards(text))
+        except ValueError as exc:
+            if self.error != str(exc):
+                self.error = str(exc)
+                self._changed()
+            return self.error
+        return None
+
+    def load_preset(self, name):
+        self.set_cards(deck.PRESETS[name])
+
+    def deck_problems(self):
+        """Why the deck can't be trained (empty list when it can)."""
+        if not self.cards:
+            return ["No cards yet."]
+        dups = deck.validate_deck(self.cards).duplicates
+        return ["Duplicated: " + ", ".join(dups)] if dups else []
+
+    def set_range(self, first, last):
+        """Ask about positions ``first``..``last``; ValueError if that isn't in the deck."""
+        n = len(self.cards)
+        if not n:
+            raise ValueError("enter a deck first")
+        if not 1 <= first <= last <= n:
+            raise ValueError(f"pick positions from 1 to {n}, the first no later than the last")
+        if (first, last) != (self.first, self.last):
+            self.first, self.last = first, last
+            self._changed()
+
+    def whole_deck(self):
+        self.set_range(1, len(self.cards))
+
+    def set_kind(self, kind, on):
+        if on != (kind in self.kinds):
+            (self.kinds.add if on else self.kinds.discard)(kind)
+            self._changed()
+
+    # --- questions ---------------------------------------------------------------------
+
+    def _candidates(self, kind):
+        """0-based positions a ``kind`` question can ask about."""
+        lo, hi = self.first - 1, self.last - 1
+        if kind == BEFORE:
+            lo += 1
+        elif kind == AFTER:
+            hi -= 1
+        return range(lo, hi + 1)
+
+    def unavailable_reason(self):
+        """Why no question can be asked, or None."""
+        if self.error:
+            return "Fix the deck's shorthand first."
+        problems = self.deck_problems()
+        if problems:
+            return " ".join(problems)
+        if not self.kinds:
+            return "Pick at least one kind of question."
+        if not any(self._candidates(k) for k in self.kinds):
+            return "A range of one card has no card before or after it to ask about."
+        return None
+
+    def next_question(self):
+        """Pick a new random question (None when none can be asked)."""
+        if self.unavailable_reason() is not None:
+            self.question = None
+            return None
+        previous = self.question.position if self.question else None
+        kinds = sorted(k for k in self.kinds
+                       if any(i + 1 != previous for i in self._candidates(k)))
+        if not kinds:  # the only card that can be asked about is the one just asked
+            kinds = sorted(k for k in self.kinds if self._candidates(k))
+        kind = self._rng.choice(kinds)
+        spots = [i for i in self._candidates(kind) if i + 1 != previous] \
+            or list(self._candidates(kind))
+        i = self._rng.choice(spots)
+        answer = i + 1 if kind == POSITION_OF else self.cards[i + _OFFSETS.get(kind, 0)]
+        self.question = Question(kind, i + 1, self.cards[i], answer)
+        return self.question
+
+    def answer(self, text):
+        """Score ``text`` as the answer and ask the next question.
+
+        Text that isn't a position or a card counts as a wrong answer. Blank
+        text raises ValueError, leaving the question and the score as they were.
+        """
+        if not text.strip():
+            raise ValueError("type an answer first, or press Don't know")
+        try:
+            correct = self.question.check(text)
+        except ValueError:
+            correct = False
+        return self._score(text, correct)
+
+    def give_up(self):
+        """Count the question as missed and ask the next one."""
+        return self._score("", False)
+
+    def _score(self, given, correct):
+        outcome = Outcome(self.question, given.strip(), correct)
+        self.asked += 1
+        self.correct += correct
+        self.streak = self.streak + 1 if correct else 0
+        self.best_streak = max(self.best_streak, self.streak)
+        self.last_outcome = outcome
+        self._changed()
+        return outcome
+
+    @property
+    def accuracy(self):
+        """Share of questions answered right this session, or None before the first."""
+        return self.correct / self.asked if self.asked else None
+
+    def reset_stats(self):
+        self.asked = self.correct = self.streak = self.best_streak = 0
+        self.last_outcome = None
+        self._changed(new_question=False)
+
+
+# --- stacking -------------------------------------------------------------------------
+
+
+class StackingModel:
+    """The cards wanted in each hand of a poker deal, and the stack that deals them.
+
+    Each hand is typed as shorthand; X (or leaving a hand short) means any card
+    will do there. Changing the game or the number of players keeps what was
+    typed for every hand, so a hand shown again comes back as it was.
+    """
+
+    def __init__(self):
+        self.game = stacking.HOLDEM
+        self.players = 4
+        self.burns = True
+        self.fill = False  # fill the indifferent spots with the unused cards
+        self.texts = {}  # hand name -> the shorthand typed for it
+        self._cards = {}  # hand name -> its parsed cards
+        self.errors = {}  # hand name -> why its shorthand doesn't parse
+        self.problem = None  # why there is no stack, when every hand parses
+        self.stack = None
+        self._listeners = []
+        self._recompute()
+
+    def subscribe(self, callback):
+        self._listeners.append(callback)
+
+    def _changed(self):
+        self._recompute()
+        for cb in list(self._listeners):
+            cb(self)
+
+    # --- edits ------------------------------------------------------------------------
+
+    def set_game(self, game):
+        if game not in stacking.GAMES:
+            raise ValueError(f"unknown game {game!r}")
+        if game != self.game:
+            self.game = game
+            self._changed()
+
+    def set_players(self, players):
+        if not stacking.MIN_PLAYERS <= players <= stacking.MAX_PLAYERS:
+            raise ValueError(f"pick {stacking.MIN_PLAYERS} to {stacking.MAX_PLAYERS} players")
+        if players != self.players:
+            self.players = players
+            self._changed()
+
+    def set_burns(self, on):
+        if on != self.burns:
+            self.burns = on
+            self._changed()
+
+    def set_fill(self, on):
+        if on != self.fill:
+            self.fill = on
+            self._changed()
+
+    def set_hand_text(self, name, text):
+        """Parse shorthand for one hand; returns the error message or None."""
+        if text == self.texts.get(name, "") and name not in self.errors:
+            return None
+        self.texts[name] = text
+        try:
+            self._cards[name] = deck.parse_cards(text, allow_indifferent=True)
+            self.errors.pop(name, None)
+        except ValueError as exc:
+            self._cards.pop(name, None)
+            self.errors[name] = str(exc)
+        self._changed()
+        return self.errors.get(name)
+
+    def clear(self):
+        self.texts, self._cards, self.errors = {}, {}, {}
+        self._changed()
+
+    # --- the stack --------------------------------------------------------------------
+
+    def hands(self):
+        """(name, size) of each hand in the current game."""
+        return stacking.hands(self.game, self.players)
+
+    def hand_label(self, name):
+        return f"{name} (dealer)" if name == stacking.player_name(self.players) else name
+
+    def _recompute(self):
+        self.stack, self.problem = None, None
+        names = [name for name, _size in self.hands()]
+        broken = [name for name in names if name in self.errors]
+        if broken:
+            self.problem = "Fix the shorthand for " + ", ".join(broken) + "."
+            return
+        wanted = {name: self._cards[name] for name in names if self._cards.get(name)}
+        try:
+            self.stack = stacking.build_stack(self.game, self.players, wanted,
+                                              self.burns, self.fill)
+        except ValueError as exc:
+            self.problem = str(exc)
+
+    def dealt(self):
+        """How many cards the deal takes off the top."""
+        return len(stacking.layout(self.game, self.players, self.burns))
+
+    def summary(self):
+        if self.stack is None:
+            return self.problem
+        named = sum(not c.indifferent for c in self.stack[:self.dealt()])
+        return (f"The deal takes the top {self.dealt()} cards; {named} of them are "
+                f"chosen. Deal from the top, one card at a time, starting on the "
+                f"dealer's left.")
+
+    def numbered(self):
+        """The stack, one card per line with the hand it is dealt to."""
+        if self.stack is None:
+            return ""
+        sizes = dict(self.hands())
+        spots = stacking.layout(self.game, self.players, self.burns)
+        lines = []
+        for n, card in enumerate(self.stack, 1):
+            if n <= len(spots):
+                spot = spots[n - 1]
+                role = self.hand_label(spot.hand)
+                if sizes.get(spot.hand, 1) > 1:
+                    role += f", card {spot.index + 1}"
+            else:
+                role = "not dealt"
+            lines.append(f"{n:>2}. {card.pretty():<4} {role}")
+        return "\n".join(lines)
+
+    def shorthand(self):
+        return deck.format_cards(self.stack) if self.stack is not None else ""

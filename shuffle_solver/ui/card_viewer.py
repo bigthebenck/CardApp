@@ -2,7 +2,8 @@
 
 Each shorthand field gets a "View cards" button; the popup it opens stays in
 sync with that field until it is closed. Images are the PNGs in
-``card_images/`` (see the README there for their source).
+``card_images/`` (see the README there for their source). An indifferent
+card (X) is shown as a card back.
 """
 
 import tkinter as tk
@@ -23,7 +24,7 @@ EMPTY_COLOR = "#999"
 
 
 def image_path(card):
-    return IMAGE_DIR / f"{card.key}.png"
+    return IMAGE_DIR / ("back.png" if card.indifferent else f"{card.key}.png")
 
 
 class CardViewer:
@@ -89,9 +90,12 @@ class CardViewer:
         c.delete("all")
         filled = sum(card is not None for card in every)
         face_up = sum(card is not None and card.face_up for card in every)
+        indifferent = sum(card is not None and card.indifferent for card in every)
         text = f"{filled} card{'s' if filled != 1 else ''}, top first"
         if len(groups) > 1:
             text += f", in {len(groups)} piles"
+        if indifferent:
+            text += f"  ·  {indifferent} indifferent (X, shown as a card back)"
         if face_up:
             text += f"  ·  {face_up} face up (orange outline)"
         self.summary.config(text=text if every else "No cards to show.")

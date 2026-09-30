@@ -1,10 +1,12 @@
-"""Tkinter window with three tabs.
+"""Tkinter window with five tabs.
 
 The first tab holds the Final Deck, Shuffle Sequence and Result panels; the
 second ("X to Y") finds shuffles from one order to another; the third ("Free
-Tracking") follows a deck through shuffles you pick. All state lives in
-``AppModel``, ``XToYModel`` and ``TrackerModel``; this module only draws it and
-forwards user edits. It contains no shuffle math.
+Tracking") follows a deck through shuffles you pick; the fourth ("Stack
+Trainer") quizzes you on a stack; the fifth ("Stacking") builds the stack that
+deals chosen poker hands. All state lives in ``AppModel``, ``XToYModel``,
+``TrackerModel``, ``TrainerModel`` and ``StackingModel``; this module only draws
+it and forwards user edits. It contains no shuffle math.
 """
 
 import json
@@ -19,7 +21,9 @@ from . import theme
 from .card_viewer import CardViewers
 from .model import DECK_SIZE, TRACKER_FILE_TYPE, AppModel, format_instructions, format_preview
 from .sequence_panel import SequencePanel
+from .stacking import StackingTab
 from .tracker import TrackerTab
+from .trainer import TrainerTab
 from .update_dialog import UpdateChecker
 from .x_to_y import XToYTab
 
@@ -28,10 +32,13 @@ GRID_ROWS = 13
 MONO = ("Courier", 10)
 
 ALL_CARD_LABELS = [deck.Card(r, s).pretty() for s in deck.SUITS for r in deck.RANKS]
+INDIFFERENT_LABEL = deck.indifferent_card().pretty()
 
 SOLVER_TAB_TITLE = "Starting Order"
 X_TO_Y_TAB_TITLE = "X to Y"
 TRACKER_TAB_TITLE = "Free Tracking"
+TRAINER_TAB_TITLE = "Stack Trainer"
+STACKING_TAB_TITLE = "Stacking"
 
 BADGES = {  # status -> (text, bootstyle)
     "ok": ("PASS", "success"),
@@ -44,7 +51,8 @@ BADGES = {  # status -> (text, bootstyle)
 
 class ShuffleSolverApp:
     def __init__(self, root, model=None, x_to_y_model=None, tracker_model=None,
-                 settings_path=None, check_updates=False):
+                 trainer_model=None, stacking_model=None, settings_path=None,
+                 check_updates=False):
         self.root = root
         self.model = model or AppModel()
         self._text_job = None
@@ -74,6 +82,11 @@ class ShuffleSolverApp:
         self.notebook.add(self.x_to_y.frame, text=X_TO_Y_TAB_TITLE)
         self.tracker = TrackerTab(self.notebook, tracker_model)
         self.notebook.add(self.tracker.frame, text=TRACKER_TAB_TITLE)
+        self.trainer = TrainerTab(self.notebook, trainer_model)
+        self.notebook.add(self.trainer.frame, text=TRAINER_TAB_TITLE)
+        self.stacking = StackingTab(self.notebook, stacking_model,
+                                    use_as_final=self.use_as_final)
+        self.notebook.add(self.stacking.frame, text=STACKING_TAB_TITLE)
 
         self.model.subscribe(lambda _m: self.refresh())
         self.refresh()
@@ -229,10 +242,15 @@ class ShuffleSolverApp:
         finally:
             self._text_is_source = False
 
+    def use_as_final(self, cards):
+        """Make ``cards`` the final deck and show the Starting Order tab."""
+        self.model.set_final_cards(cards)
+        self.notebook.select(0)
+
     def _fill_slot_choices(self, index):
-        # Offer only cards not already placed in another slot.
+        # Offer only cards not already placed in another slot; X can go anywhere.
         used = {c.key for i, c in enumerate(self.model.slots) if c is not None and i != index}
-        self.slot_boxes[index]["values"] = [
+        self.slot_boxes[index]["values"] = [INDIFFERENT_LABEL] + [
             lbl for lbl, key in zip(ALL_CARD_LABELS, deck.FULL_DECK_KEYS) if key not in used
         ]
 
@@ -242,7 +260,7 @@ class ShuffleSolverApp:
             self.model.set_slot(index, None)
             return
         try:
-            cards = deck.parse_cards(text)
+            cards = deck.parse_cards(text, allow_indifferent=True)
             if len(cards) != 1:
                 raise ValueError("one card per slot")
         except ValueError:
@@ -277,8 +295,10 @@ class ShuffleSolverApp:
 
         report = m.deck_report()
         if report.ok:
-            self.deck_status.config(text="✓ Full 52-card deck, no duplicates.",
-                                    bootstyle="success")
+            x = report.indifferent
+            text = ("✓ Full 52-card deck, no duplicates." if not x else
+                    f"✓ 52 cards, no duplicates; {x} indifferent (X).")
+            self.deck_status.config(text=text, bootstyle="success")
         else:
             self.deck_status.config(text="\n".join(report.messages()), bootstyle="danger")
 

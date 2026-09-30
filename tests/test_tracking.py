@@ -3,8 +3,9 @@ import pytest
 from shuffle_solver import deck
 from shuffle_solver import shuffle_ops as ops
 from shuffle_solver.solver import Step, simulate
-from shuffle_solver.tracking import (AddCards, Gather, Place, Rearrange, Shuffle, Split, Table,
-                                     TakeOut, format_piles, parse_piles, pile_name, replay)
+from shuffle_solver.tracking import (AddCards, Gather, NameCards, Place, Rearrange, Shuffle,
+                                     Split, Table, TakeOut, format_piles, parse_piles,
+                                     pile_name, replay)
 
 NDO = deck.PRESETS["New deck order"]
 
@@ -179,3 +180,62 @@ def test_rearrange_must_keep_exactly_the_same_cards():
     table = Table.start(cards("A-4H"))
     with pytest.raises(ValueError, match="missing 3♥ 4♥; not on the table 5♥; given twice 5♥"):
         Rearrange("", parse_piles("AH, 2H, 5H, 5H")).apply(table)
+
+
+def test_indifferent_cards_are_tracked():
+    start = deck.parse_cards("AC, X3, 2C", allow_indifferent=True)
+    x = deck.indifferent_card()
+    tables, error = replay(start, [AddCards((x, x), "A", 1), Shuffle(Step(ops.CUT, 1))])
+    assert error is None
+    assert piles(tables[1]) == {"A": [x, x, *start]}
+    assert tables[1].keys() == {"AC", "2C"} and tables[1].indifferent_count() == 5
+    with pytest.raises(ValueError, match="can't be taken out"):
+        TakeOut((x,)).apply(tables[0])
+
+
+def test_rearrange_keeps_the_number_of_indifferent_cards():
+    table = Table.start(deck.parse_cards("AC, X2", allow_indifferent=True))
+    Rearrange("", parse_piles("X, AC | X")).apply(table)
+    with pytest.raises(ValueError, match="3 indifferent cards"):
+        Rearrange("", parse_piles("X2, AC, X")).apply(table)
+
+
+def test_name_cards_turns_x_cards_into_real_ones():
+    table = Table.start(deck.parse_cards("AC, X2, X`, 2C", allow_indifferent=True))
+    step = NameCards(cards("5S 6S"), "A", 3)
+    assert step.label() == "Name X at 3\u20134 of pile A as 5♠ 6♠"
+    after = step.apply(table)
+    assert [str(c) for c in after.pile("A").cards] == ["AC", "X", "5S", "6S`", "2C"]
+    assert after.indifferent_count() == 1
+    with pytest.raises(ValueError, match=r"not an X card at position 1 \(A♣\)"):
+        NameCards(cards("5S"), "A", 1).apply(table)
+    with pytest.raises(ValueError, match="already in play: 2♣"):
+        NameCards(cards("2C"), "A", 2).apply(table)
+    with pytest.raises(ValueError, match="no room"):
+        NameCards(cards("5S 6S"), "A", 5).apply(table)
+
+
+def test_naming_x_cards_reaches_back_to_where_they_appeared():
+    start = deck.parse_cards("AC, X, 2C, X", allow_indifferent=True)
+    x = deck.indifferent_card()
+    ks = cards("KS")[0]
+    steps = [Shuffle(Step(ops.OUT_FARO)),  # AC 2C X X
+             AddCards((x,), "A", 1),  # X AC 2C X X
+             NameCards((ks,), "A", 4)]  # the start's first X
+    tables, error = replay(start, steps)
+    assert error is None
+    assert list(tables[0].pile("A").cards) == [start[0], ks, start[2], x]
+    assert list(tables[1].pile("A").cards) == [start[0], start[2], ks, x]
+    assert list(tables[3].pile("A").cards) == [x, start[0], start[2], ks, x]
+    # An X added partway through is named only from where it was added.
+    tables, error = replay(start, steps[:2] + [NameCards((ks,), "A", 1)])
+    assert error is None and tables[0].keys() == {"AC", "2C"} and "KS" in tables[2].keys()
+
+
+def test_naming_back_clashes_with_a_card_used_earlier():
+    start = deck.parse_cards("AC, X, KS", allow_indifferent=True)
+    steps = [TakeOut(cards("KS"), "discard"), NameCards(cards("KS"), "A", 2)]
+    tables, error = replay(start, steps)
+    assert error == (1, "K♠ is already on the table in the starting deck, "
+                        "where that X card was too")
+    assert len(tables) == 2 and tables[0].indifferent_count() == 1
