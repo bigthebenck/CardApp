@@ -352,6 +352,9 @@ class XToYTab:
         m = self.model
         if self._job is not None and self._job.cards != m.cards:
             self.cancel_search()  # its answer would be for orders that are gone
+        if self.depth_var.get() != m.depth:  # e.g. after loading a saved tab
+            self.depth_var.set(m.depth)
+            self._show_depth_note()
         for side in m.SIDES:
             # Rewrite a box only when its cards changed from somewhere else (preset,
             # swap, clear), so the user's own formatting survives.

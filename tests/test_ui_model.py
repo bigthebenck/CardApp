@@ -687,3 +687,59 @@ def test_tracker_takes_indifferent_cards_and_saves_them(tmp_path):
     loaded = TrackerModel()
     loaded.load(path)
     assert loaded.cards == m.cards and loaded.states[-1] == m.states[-1]
+
+
+# --- saving the tabs without files (the session) ---------------------------------------
+
+def test_x_to_y_round_trip_keeps_orders_and_depth():
+    m = XToYModel()
+    m.load_preset("start", "New deck order")
+    m.set_from_text("end", "AS`, 2S")
+    m.set_depth(3)
+    m.set_outcome(PathOutcome("ok", ["found"], []))
+    again = XToYModel()
+    again.load_dict(m.to_dict())
+    assert again.cards == m.cards and again.depth == 3
+    assert again.cards["end"][0].face_up
+    assert again.outcome.status == "waiting"  # an answer is found again, not saved
+    with pytest.raises(ValueError):
+        again.load_dict({"start": ["X"]})  # X to Y has no indifferent cards
+    with pytest.raises(ValueError):
+        again.load_dict({"depth": 99})
+
+
+def test_trainer_round_trip_keeps_stack_range_and_kinds_but_not_score():
+    m = TrainerModel(random.Random(1))
+    m.set_cards(NDO[:13])
+    m.set_range(2, 9)
+    m.set_kind(BEFORE, False)
+    m.give_up()
+    again = TrainerModel(random.Random(1))
+    again.load_dict(m.to_dict())
+    assert again.cards == m.cards and (again.first, again.last) == (2, 9)
+    assert again.kinds == m.kinds and again.asked == 0
+    assert again.question is not None and 2 <= again.question.position <= 9
+    with pytest.raises(ValueError):
+        again.load_dict({"cards": ["AS"], "first": 1, "last": 5})
+    empty = TrainerModel()
+    empty.load_dict(TrainerModel().to_dict())
+    assert empty.cards == [] and empty.question is None
+
+
+def test_stacking_round_trip_keeps_every_typed_hand():
+    from shuffle_solver.ui.model import StackingModel
+    m = StackingModel()
+    m.set_players(3)
+    m.set_hand_text("Player 1", "AS, AH")
+    m.set_hand_text("Flop", "zz")  # a typo is kept as typed
+    m.set_burns(False)
+    m.set_game("five_card")  # the Flop is kept, though five-card draw has none
+    again = StackingModel()
+    again.load_dict(m.to_dict())
+    assert (again.game, again.players, again.burns, again.fill) == (
+        m.game, 3, False, False)
+    assert again.texts == {"Player 1": "AS, AH", "Flop": "zz"}
+    assert "Flop" in again.errors
+    assert again.numbered() == m.numbered()
+    with pytest.raises(ValueError):
+        again.load_dict({"players": 1})

@@ -1,5 +1,6 @@
 """Smoke tests for the Tk window. Skipped when Tk or a display is unavailable."""
 
+import json
 import time
 
 import pytest
@@ -284,6 +285,46 @@ def test_drag_a_tab_past_its_neighbours(root):
     tabs._release()
     tabs._drag_to(a, c.header.winfo_rootx() + c.header.winfo_width() - 2)
     assert tabs.tabs == [a, b, c]  # not dragging any more
+
+
+def test_tab_strip_scrolls_when_the_tabs_dont_fit(root):
+    root.deiconify()
+    root.geometry("1200x700")
+    app = ShuffleSolverApp(root)
+    tabs = app.tabs
+    app.new_tab(TRAINER)
+    root.update()
+    assert not tabs.overflowing() and not tabs.scroll_left.winfo_ismapped()
+
+    def in_view(tab):
+        left, right = tabs.visible_span()
+        return left <= tab.header.winfo_x() and tab.header.winfo_x() + tab.header.winfo_width() <= right + 1
+
+    for _ in range(11):
+        app.new_tab(TRAINER)
+        assert in_view(tabs.current)  # each new tab is scrolled to
+    root.update()
+    assert tabs.overflowing() and tabs.scroll_right.winfo_ismapped()
+    assert tabs.canvas.winfo_width() < tabs.strip.winfo_width()
+    add = tabs.add_button  # the "+" stays on screen
+    assert add.winfo_rootx() + add.winfo_width() <= root.winfo_rootx() + root.winfo_width()
+    first = tabs.tabs[0]
+    assert not in_view(first)
+    tabs.select(first)
+    assert in_view(first) and tabs.visible_span()[0] == 0
+    tabs.scroll(3)
+    assert tabs.visible_span()[0] == 3 * 40
+    tabs.select_next(-1)  # round to the last tab
+    assert in_view(tabs.tabs[-1])
+    last = tabs.current
+    tabs._press(last)
+    for _ in range(60):  # hold the mouse past the left end: the strip scrolls along
+        tabs._drag_to(last, tabs.canvas.winfo_rootx() - 5)
+    tabs._release()
+    assert tabs.tabs[0] is last and tabs.visible_span()[0] == 0
+    tabs.close_others(tabs.current)
+    root.update()
+    assert not tabs.overflowing() and tabs.visible_span()[0] == 0
 
 
 def test_rename_a_tab_in_place(app):
@@ -1019,3 +1060,92 @@ def test_stacking_tab_rejects_bad_player_count(app):
     assert not tab.apply_players()
     assert "2 to 10" in tab.players_error.cget("text")
     assert tab.model.players == 4
+
+
+# --- the session: tabs kept between runs -------------------------------------------------
+
+def test_tabs_come_back_after_quitting(root, tmp_path):
+    path = tmp_path / "session.json"
+    app = ShuffleSolverApp(tk.Toplevel(root), session_path=path)
+    assert app.tabs.tabs == []  # no session yet: empty
+    order = app.new_tab(SOLVER, "Opener")
+    order.load_preset()
+    order.sequence.add_step(ops.OUT_FARO)
+    x_to_y = app.new_tab(X_TO_Y)
+    x_to_y.load_preset("start")
+    x_to_y.depth_var.set(3)
+    x_to_y._on_depth("3")
+    tracker = app.new_tab(TRACKER)
+    tracker.deck_text.insert("1.0", "A-KH")  # typed just before quitting
+    trainer = app.new_tab(TRAINER)
+    trainer.model.set_cards(deck.PRESETS["New deck order"][:10])
+    trainer.model.set_kind(next(iter(trainer.kind_vars)), False)
+    stack = app.new_tab(STACKING)
+    stack.hand_vars["Player 1"].set("AS, AH")
+    app.tabs.select(app.tabs.tabs[1])
+    app.quit()
+    assert not app.root.winfo_exists() and path.is_file()
+
+    again = ShuffleSolverApp(tk.Toplevel(root), session_path=path)
+    tabs = again.tabs
+    assert [(t.kind, t.title) for t in tabs.tabs] == [
+        (SOLVER, "Opener"), (X_TO_Y, "X to Y"), (TRACKER, "Free Tracking"),
+        (TRAINER, "Stack Trainer"), (STACKING, "Stacking")]
+    assert tabs.current is tabs.tabs[1]
+    order2, x_to_y2, tracker2, trainer2, stack2 = (t.content for t in tabs.tabs)
+    assert order2.model.slots == order.model.slots and order2.badge.cget("text") == "PASS"
+    assert steps_shown(order2)[0][0] == "1. Out-Faro"
+    assert x_to_y2.model.cards == x_to_y.model.cards and x_to_y2.depth_var.get() == 3
+    assert tracker2.model.cards == deck.parse_cards("A-KH")
+    assert tracker2.deck_text.get("1.0", "end-1c") == deck.format_cards(tracker2.model.cards)
+    assert trainer2.model.kinds == trainer.model.kinds
+    assert {k: v.get() for k, v in trainer2.kind_vars.items()} == {
+        k: v.get() for k, v in trainer.kind_vars.items()}
+    assert stack2.hand_vars["Player 1"].get() == "AS, AH"
+    assert stack2.model.numbered() == stack.model.numbered()
+
+    for tab in list(tabs.tabs):  # closing everything: the next start is empty
+        tabs.close(tab)
+    again.quit()
+    assert ShuffleSolverApp(tk.Toplevel(root), session_path=path).tabs.tabs == []
+
+
+def test_a_damaged_session_starts_empty_or_skips_the_bad_tab(root, tmp_path):
+    path = tmp_path / "session.json"
+    for text in ("not json", "[]", '{"version": 99, "tabs": []}', '{"version": 1}'):
+        path.write_text(text, encoding="utf-8")
+        assert ShuffleSolverApp(tk.Toplevel(root), session_path=path).tabs.tabs == []
+    path.write_text(json.dumps({"version": 1, "current": 2, "tabs": [
+        {"kind": "no-such-kind", "title": "?"},
+        {"kind": SOLVER, "title": "Bad", "state": {"final": ["ZZ"]}},
+        {"kind": TRAINER, "title": "Good", "state": {"cards": ["AS", "KH"]}},
+        {"title": "no kind"},
+    ]}), encoding="utf-8")
+    app = ShuffleSolverApp(tk.Toplevel(root), session_path=path)
+    assert app.tabs.titles() == ["Good"] and app.tabs.current.title == "Good"
+    assert app.tabs.current.content.model.cards == deck.parse_cards("AS, KH")
+
+
+def test_the_session_is_saved_every_so_often(root, tmp_path, monkeypatch):
+    path = tmp_path / "session.json"
+    app = ShuffleSolverApp(tk.Toplevel(root), session_path=path)
+    assert app._autosave_job is not None  # the timer runs from the start
+    app.new_tab(SOLVER, "Kept")
+    app._autosave()
+    assert json.loads(path.read_text(encoding="utf-8"))["tabs"][0]["title"] == "Kept"
+    writes = []
+    real = app_module.os.replace
+    monkeypatch.setattr(app_module.os, "replace", lambda *a: writes.append(a) or real(*a))
+    app._autosave()
+    assert writes == []  # nothing changed: nothing written
+    app.tabs.rename(app.tabs.current, "Renamed")
+    app._autosave()
+    assert len(writes) == 1 and "Renamed" in path.read_text(encoding="utf-8")
+    assert not (tmp_path / "session.json.tmp").exists()
+    app.root.destroy()
+
+
+def test_no_session_path_means_no_session(app, tmp_path):
+    assert app.session_path is None and app._autosave_job is None
+    app.new_tab(SOLVER)
+    app.save_session()  # does nothing

@@ -249,6 +249,9 @@ class TrainerTab:
             self.first_var.set(str(m.first))
             self.last_var.set(str(m.last))
         self.range_total.config(text=f"of {n}" if n else "")
+        for kind, var in self.kind_vars.items():  # e.g. after loading a saved tab
+            if var.get() != (kind in m.kinds):
+                var.set(kind in m.kinds)
 
         q = m.question
         self.question_label.config(text=q.prompt() if q else m.unavailable_reason())

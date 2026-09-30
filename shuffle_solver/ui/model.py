@@ -411,6 +411,19 @@ class XToYModel:
             raise ValueError(f"search depth must be between 1 and {path_finder.MAX_DEPTH}")
         self.depth = depth
 
+    def to_dict(self):
+        """Both orders and the search depth; a found answer is not kept (search again)."""
+        return {"version": 1, "depth": self.depth,
+                **{side: [str(c) for c in self.cards[side]] for side in self.SIDES}}
+
+    def load_dict(self, data):
+        cards = {side: [_card(t, allow_indifferent=False) for t in data.get(side, [])]
+                 for side in self.SIDES}
+        self.set_depth(int(data.get("depth", path_finder.SHORTEST_DEPTH)))
+        self.cards, self.errors = cards, {side: None for side in self.SIDES}
+        self._invalidate()
+        self._changed()
+
 
 def _shuffles(n):
     return f"{n} shuffle{'s' if n != 1 else ''}"
@@ -737,8 +750,8 @@ class TrackerModel(StepList):
 TRACKER_FILE_TYPE = "free_tracking"
 
 
-def _card(text):
-    cards = deck.parse_cards(text, allow_indifferent=True)
+def _card(text, allow_indifferent=True):
+    cards = deck.parse_cards(text, allow_indifferent=allow_indifferent)
     if len(cards) != 1:
         raise ValueError(f"bad card {text!r} in saved file")
     return cards[0]
@@ -1040,6 +1053,23 @@ class TrainerModel:
         self.last_outcome = None
         self._changed(new_question=False)
 
+    def to_dict(self):
+        """The stack, the range and the kinds of question; not the score."""
+        return {"version": 1, "cards": [str(c) for c in self.cards],
+                "first": self.first, "last": self.last, "kinds": sorted(self.kinds)}
+
+    def load_dict(self, data):
+        cards = [_card(t, allow_indifferent=False) for t in data.get("cards", [])]
+        first, last = int(data.get("first", 1)), int(data.get("last", len(cards)))
+        if cards and not 1 <= first <= last <= len(cards):
+            raise ValueError("saved range is outside the stack")
+        kinds = set(data.get("kinds", QUESTION_KINDS)) & set(QUESTION_KINDS)
+        self.cards = [c.with_face_up(False) for c in cards]
+        self.error = None
+        self.first, self.last = (first, last) if cards else (1, 0)
+        self.kinds = kinds
+        self._changed()
+
 
 # --- stacking -------------------------------------------------------------------------
 
@@ -1115,6 +1145,30 @@ class StackingModel:
 
     def clear(self):
         self.texts, self._cards, self.errors = {}, {}, {}
+        self._changed()
+
+    def to_dict(self):
+        """The deal and what was typed for every hand, shown or not."""
+        return {"version": 1, "game": self.game, "players": self.players,
+                "burns": self.burns, "fill": self.fill,
+                "texts": {name: text for name, text in self.texts.items() if text}}
+
+    def load_dict(self, data):
+        game = data.get("game", stacking.HOLDEM)
+        players = int(data.get("players", 4))
+        if game not in stacking.GAMES:
+            raise ValueError(f"unknown game {game!r}")
+        if not stacking.MIN_PLAYERS <= players <= stacking.MAX_PLAYERS:
+            raise ValueError(f"bad player count {players}")
+        self.game, self.players = game, players
+        self.burns, self.fill = bool(data.get("burns", True)), bool(data.get("fill", False))
+        self.texts, self._cards, self.errors = {}, {}, {}
+        for name, text in dict(data.get("texts", {})).items():
+            self.texts[name] = str(text)
+            try:
+                self._cards[name] = deck.parse_cards(str(text), allow_indifferent=True)
+            except ValueError as exc:
+                self.errors[name] = str(exc)
         self._changed()
 
     # --- the stack --------------------------------------------------------------------

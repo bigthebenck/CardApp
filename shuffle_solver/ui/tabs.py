@@ -9,7 +9,9 @@ shows one large "New tab" button instead.
 
 Mouse: click a tab to show it, drag it sideways to move it, double-click its
 title to rename it, click its × (or middle-click the tab) to close it, and
-right-click it for a menu of all of these.
+right-click it for a menu of all of these. When the tabs don't fit, the strip
+scrolls: with the mouse wheel over it, with the ‹ › arrows that appear at its
+ends, or by dragging a tab past an end. The tab on show is kept in view.
 """
 
 import tkinter as tk
@@ -18,6 +20,7 @@ from dataclasses import dataclass, field
 import ttkbootstrap as tb
 
 SELECTED, UNSELECTED = "TabSelected", "Tab"  # style prefixes, set up in theme.py
+SCROLL_STEP = 40  # pixels per wheel notch; an arrow click scrolls 3 steps
 
 
 @dataclass
@@ -53,8 +56,22 @@ class TabManager:
 
         self.frame = tb.Frame(parent)
         self.bar = tb.Frame(self.frame)
-        self.strip = tb.Frame(self.bar)
-        self.strip.pack(side=tk.LEFT)
+        # The tab headers sit in ``strip``, a frame inside a canvas that shows as much
+        # of it as fits and scrolls sideways for the rest.
+        self.canvas = tb.Canvas(self.bar, highlightthickness=0, borderwidth=0, height=1)
+        self.canvas.pack(side=tk.LEFT)
+        self.strip = tb.Frame(self.canvas)
+        self.canvas.create_window(0, 0, window=self.strip, anchor=tk.NW)
+        self._scroll_tag = f"TabStrip{id(self)}"  # wheel bindings shared by the whole strip
+        self.frame.bind_class(self._scroll_tag, "<MouseWheel>",
+                              lambda e: self.scroll(-1 if e.delta > 0 else 1))
+        self.frame.bind_class(self._scroll_tag, "<Button-4>", lambda e: self.scroll(-1))
+        self.frame.bind_class(self._scroll_tag, "<Button-5>", lambda e: self.scroll(1))
+        self._add_scroll_tag(self.canvas, self.strip)
+        self.scroll_left = self._arrow("‹", -3)
+        self.scroll_right = self._arrow("›", 3)
+        self.strip.bind("<Configure>", lambda e: self._fit())
+        self.bar.bind("<Configure>", lambda e: self._fit())
         self.add_button = tb.Label(self.bar, text="+", style="TabAdd.TLabel", cursor="hand2")
         self.add_button.pack(side=tk.LEFT, fill=tk.Y)
         self.add_button.bind("<ButtonRelease-1>",
@@ -68,6 +85,16 @@ class TabManager:
         self.tab_menu = tb.Menu(self.frame, tearoff=False)
         self._build_empty()
         self._show_body()
+
+    def _arrow(self, text, steps):
+        arrow = tb.Label(self.bar, text=text, style="TabAdd.TLabel", cursor="hand2")
+        arrow.bind("<ButtonRelease-1>", lambda e: self.scroll(steps))
+        self._add_scroll_tag(arrow)
+        return arrow
+
+    def _add_scroll_tag(self, *widgets):
+        for w in widgets:
+            w.bindtags((self._scroll_tag,) + w.bindtags())
 
     def _build_empty(self):
         self.empty = tb.Frame(self.body)
@@ -119,6 +146,7 @@ class TabManager:
         tab.content.frame.pack(fill=tk.BOTH, expand=True)
         self._style_headers()
         self._show_body()
+        self.scroll_into_view(tab)
         self._changed()
 
     def close(self, tab):
@@ -138,6 +166,8 @@ class TabManager:
         tab.header.destroy()
         tab.content.frame.destroy()
         self._show_body()
+        if self.current is not None:
+            self.scroll_into_view(self.current)
         self._changed()
 
     def close_others(self, keep):
@@ -152,6 +182,7 @@ class TabManager:
         self.tabs.remove(tab)
         self.tabs.insert(index, tab)
         self._pack_headers()
+        self.scroll_into_view(tab)
         self._changed()
 
     def rename(self, tab, title):
@@ -161,6 +192,7 @@ class TabManager:
             return False
         tab.title = title
         tab.label.config(text=title)
+        self.scroll_into_view(tab)
         self._changed()
         return True
 
@@ -194,6 +226,7 @@ class TabManager:
         tab.close_label.bind("<Enter>", lambda e: tab.close_label.config(
             style="TabClose.TLabel"))
         tab.close_label.bind("<Leave>", lambda e: self._style_header(tab))
+        self._add_scroll_tag(tab.header, tab.label, tab.close_label)
         middle, right = ("<Button-3>", "<Button-2>") if self._is_aqua() else (
             "<Button-2>", "<Button-3>")
         for widget in (tab.header, tab.label):
@@ -212,6 +245,58 @@ class TabManager:
             tab.header.pack_forget()
         for tab in self.tabs:
             tab.header.pack(side=tk.LEFT, padx=(0, 2))
+
+    # --- scrolling --------------------------------------------------------------------
+
+    def _fit(self):
+        """Size the visible part of the strip; show the arrows only if the tabs don't fit."""
+        need, height = self.strip.winfo_reqwidth(), self.strip.winfo_reqheight()
+        room = self.bar.winfo_width() - self.add_button.winfo_reqwidth()
+        if self.bar.winfo_width() <= 1:  # not laid out yet: assume everything fits
+            room = need
+        overflow = need > room
+        if overflow and not self.overflowing():
+            self.scroll_left.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 2), before=self.canvas)
+            self.scroll_right.pack(side=tk.LEFT, fill=tk.Y, padx=(2, 0), after=self.canvas)
+        elif not overflow and self.overflowing():
+            self.scroll_left.pack_forget()
+            self.scroll_right.pack_forget()
+        if overflow:
+            room -= self.scroll_left.winfo_reqwidth() + self.scroll_right.winfo_reqwidth() + 4
+        self.canvas.config(width=max(min(need, room), 1), height=height,
+                           scrollregion=(0, 0, need, height))
+        if not overflow:
+            self.canvas.xview_moveto(0)
+
+    def overflowing(self):
+        """Whether the tabs are too wide to show at once (so the arrows are shown)."""
+        return bool(self.scroll_left.winfo_manager())
+
+    def visible_span(self):
+        """The part of the strip on show, as (left, right) pixels from its start."""
+        left = self.canvas.canvasx(0)
+        return left, left + int(self.canvas.cget("width"))
+
+    def scroll(self, steps):
+        """Scroll ``steps`` × SCROLL_STEP pixels (right if positive)."""
+        if self.overflowing():
+            self._scroll_to(self.visible_span()[0] + steps * SCROLL_STEP)
+
+    def _scroll_to(self, left):
+        # Exact pixels: xview_scroll and xscrollincrement would round to whole steps.
+        self.canvas.xview_moveto(max(left, 0) / self.strip.winfo_reqwidth())
+
+    def scroll_into_view(self, tab):
+        self.frame.update_idletasks()  # lay out new or resized headers first
+        self._fit()
+        if not self.overflowing():
+            return
+        x, w = tab.header.winfo_x(), tab.header.winfo_width()
+        left, right = self.visible_span()
+        if x < left:
+            self._scroll_to(x)
+        elif x + w > right:
+            self._scroll_to(x + w - (right - left))
 
     def _style_headers(self):
         for tab in self.tabs:
@@ -251,6 +336,12 @@ class TabManager:
             return
         tab.header.config(cursor="sb_h_double_arrow")
         tab.label.config(cursor="sb_h_double_arrow")
+        left = self.canvas.winfo_rootx()
+        if x_root < left:  # past an end of the strip: bring the next tabs into view
+            self.scroll(-1)
+        elif x_root > left + self.canvas.winfo_width():
+            self.scroll(1)
+        self.canvas.update_idletasks()
         while True:
             i = self.tabs.index(tab)
             if i + 1 < len(self.tabs) and x_root > self._middle(self.tabs[i + 1]):
@@ -315,6 +406,7 @@ class TabManager:
         tab.entry.bind("<KP_Enter>", lambda e: self.finish_rename(tab))
         tab.entry.bind("<FocusOut>", lambda e: self.finish_rename(tab))
         tab.entry.bind("<Escape>", lambda e: self.finish_rename(tab, keep=False))
+        self.scroll_into_view(tab)
         return tab.entry
 
     def finish_rename(self, tab, keep=True):

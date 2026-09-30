@@ -8,9 +8,14 @@ Trainer" quizzes you on a stack; "Stacking" builds the stack that deals chosen
 poker hands. Each tab keeps its own state in its own model; this module only
 routes the menu, files and cross-tab hand-offs to the right tab. It contains no
 shuffle math.
+
+The open tabs are saved as a session (their kind, title and model state, and
+which one is on show) every ``AUTOSAVE_MS`` and on quitting, and reopened the
+next time the app starts. Closing every tab before quitting starts it empty.
 """
 
 import json
+import os
 import re
 import tkinter as tk
 from pathlib import Path
@@ -42,9 +47,14 @@ TAB_TITLES = {
 }
 SAVABLE = {SOLVER: "Save setup", TRACKER: "Save tracking project"}
 
+SESSION_PATH = Path.home() / ".shuffle_solver_session.json"
+SESSION_VERSION = 1
+AUTOSAVE_MS = 30_000
+
 
 class ShuffleSolverApp:
-    def __init__(self, root, settings_path=None, check_updates=False):
+    def __init__(self, root, settings_path=None, check_updates=False, session_path=None):
+        """``session_path``: where the open tabs are kept between runs (None: nowhere)."""
         self.root = root
         root.title(APP_TITLE)
         root.minsize(1200, 700)
@@ -66,6 +76,14 @@ class ShuffleSolverApp:
         self.tabs.frame.pack(fill=tk.BOTH, expand=True, padx=6, pady=6)
         self._on_tabs_changed()
 
+        self.session_path = session_path
+        self._saved_session = None  # the JSON last written, to skip unchanged saves
+        self._autosave_job = None
+        if session_path is not None:
+            self.restore_session()
+            root.protocol("WM_DELETE_WINDOW", self.quit)
+            self._autosave_job = root.after(AUTOSAVE_MS, self._autosave)
+
         if check_updates and self.updates.check_on_startup:
             self.updates.check(manual=False)  # quiet unless a newer version is out
 
@@ -84,7 +102,7 @@ class ShuffleSolverApp:
         filemenu.add_command(label="Export starting order…", command=self.export_start)
         filemenu.add_separator()
         filemenu.add_command(label="Close tab", command=self.close_current, accelerator="Ctrl+W")
-        filemenu.add_command(label="Quit", command=self.root.destroy)
+        filemenu.add_command(label="Quit", command=self.quit)
         menubar.add_cascade(label="File", menu=filemenu)
         viewmenu = tb.Menu(menubar, tearoff=False)
         self.theme_var = tk.StringVar(value=self.theme.family)
@@ -206,6 +224,77 @@ class ShuffleSolverApp:
             return None
         return tab.content
 
+    # --- session ------------------------------------------------------------------------
+
+    def session_dict(self):
+        """The open tabs, in order, and which one is on show."""
+        tabs = self.tabs.tabs
+        return {
+            "version": SESSION_VERSION,
+            "current": tabs.index(self.tabs.current) if self.tabs.current in tabs else None,
+            "tabs": [{"kind": t.kind, "title": t.title, "state": t.content.model.to_dict()}
+                     for t in tabs],
+        }
+
+    def save_session(self):
+        """Write the session file if anything changed since the last write."""
+        if self.session_path is None:
+            return
+        text = json.dumps(self.session_dict())
+        if text == self._saved_session:
+            return
+        path = Path(self.session_path)
+        tmp = path.with_name(path.name + ".tmp")
+        try:  # write a copy, then swap it in, so a crash mid-write can't lose the old one
+            tmp.write_text(text, encoding="utf-8")
+            os.replace(tmp, path)
+        except OSError:
+            return  # try again at the next autosave
+        self._saved_session = text
+
+    def restore_session(self):
+        """Reopen the tabs saved last time; any that can't be read are left out."""
+        try:
+            data = json.loads(Path(self.session_path).read_text(encoding="utf-8"))
+            entries = list(data["tabs"]) if data.get("version") == SESSION_VERSION else []
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
+            return
+        restored = {}  # index in the file -> Tab
+        for i, entry in enumerate(entries):
+            try:
+                kind, title = entry["kind"], str(entry["title"])
+                if kind not in TAB_TITLES:
+                    continue
+                tab = self.tabs.add(kind, title, select=False)
+            except (KeyError, TypeError):
+                continue
+            try:
+                tab.content.model.load_dict(entry.get("state") or {})
+            except (ValueError, KeyError, TypeError, AttributeError):
+                self.tabs.close(tab)
+                continue
+            restored[i] = tab
+        current = restored.get(data.get("current"))
+        if current is not None:
+            self.tabs.select(current)
+        self._saved_session = json.dumps(self.session_dict())
+
+    def _autosave(self):
+        self.save_session()
+        self._autosave_job = self.root.after(AUTOSAVE_MS, self._autosave)
+
+    def quit(self):
+        """Save the session (with anything just typed) and close the window."""
+        if self._autosave_job is not None:
+            self.root.after_cancel(self._autosave_job)
+            self._autosave_job = None
+        for tab in self.tabs.tabs:
+            apply_text = getattr(tab.content, "apply_text", None)
+            if apply_text is not None:
+                apply_text()  # typed in the last moment, before the box was read
+        self.save_session()
+        self.root.destroy()
+
     # --- theme ---------------------------------------------------------------------------------
 
     def set_theme(self):
@@ -229,7 +318,7 @@ def main():
     root = tb.Window()
     # Only the installed app checks by itself; running from source, use Help > Check for updates.
     ShuffleSolverApp(root, settings_path=theme.SETTINGS_PATH,
-                     check_updates=updater.is_installed())
+                     check_updates=updater.is_installed(), session_path=SESSION_PATH)
     root.mainloop()
 
 

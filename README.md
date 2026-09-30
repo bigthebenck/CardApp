@@ -82,7 +82,7 @@ iscc /DAppVersion=1.1.0 installer/CardApp.iss # -> dist/CardApp-Setup-1.1.0.exe
 
 ## Using it
 
-The window starts empty. Press **+ New tab** in the middle (or the small **+**
+The first time, the window starts empty. Press **+ New tab** in the middle (or the small **+**
 after the last tab, or Ctrl+T) and pick what the tab is for: **Starting
 Order**, **X to Y**, **Free Tracking**, **Stack Trainer** or **Stacking**. Open as
 many tabs of each kind as you like; each keeps its own work.
@@ -93,6 +93,15 @@ many tabs of each kind as you like; each keeps its own work.
   throws its work away, so save first if you need it.
 - Right-click a tab for Rename, Move left/right, Close and Close other tabs.
 - Ctrl+Tab and Ctrl+Shift+Tab step through the tabs.
+- When there are more tabs than fit, scroll the strip with the mouse wheel or
+  the **‹ ›** arrows at its ends, or drag a tab past an end.
+
+Your tabs are kept between runs. They're saved every 30 seconds and when you
+quit, and reopened with their titles, order and contents the next time the app
+starts, on the tab you were looking at. X to Y answers aren't kept (press
+**Find shuffles** again), and neither is the Stack Trainer's score. Close every
+tab before quitting to start empty. The session lives in
+`~/.shuffle_solver_session.json`; delete it to start afresh.
 
 ### Starting Order tab
 
