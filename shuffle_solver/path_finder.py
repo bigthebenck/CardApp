@@ -27,6 +27,12 @@ top is 0), so the goal is always ``[0, 1, ..., n-1]``. Face-up flags are
 ignored when matching cards. Inside the search a deck is stored the other way
 round, as bytes giving each card's position, so a shuffle is one
 ``bytes.translate`` (it moves every card from position p to perm[p]).
+
+Indifferent cards (X) may appear on either side. An X in the target means any
+card will do there; an X in the start stands for whichever card the target
+needs where it lands. Only the cards that must finish somewhere particular
+are tracked, so a search state is just their positions: fewer tracked cards
+make a smaller, faster search, and the route found is shortest for them.
 """
 
 import time
@@ -51,6 +57,9 @@ class SearchCancelled(Exception):
 class PathResult:
     steps: list
     shortest: bool  # True when the search proved nothing shorter exists
+    # True when X cards on both sides had to be paired up one fixed way, so the
+    # search could only cover that pairing (shortest is then always False)
+    paired: bool = False
 
 
 def all_steps(n=ops.DECK_SIZE):
@@ -79,19 +88,62 @@ def _faro_steps(n):
     return [Step(ops.OUT_FARO), Step(ops.IN_FARO)] if n % 2 == 0 else []
 
 
-def target_positions(start, target):
-    """``v[i]`` = where the card now at position i must finish. Cards match by key."""
-    keys = [c.key for c in start]
-    where = {c.key: i for i, c in enumerate(target)}
-    if len(start) != len(target) or len(where) != len(target) or sorted(keys) != sorted(where):
-        raise ValueError("the two orders must contain exactly the same cards")
-    return [where[k] for k in keys]
+@dataclass(frozen=True)
+class Tracked:
+    """The cards a route must move: the one at ``sources[t]`` must finish at ``goals[t]``.
+
+    ``keys[t]`` is that card's key, or None for an X in the start that was
+    picked to become a card the target needs. Every other card may finish
+    anywhere. ``paired`` is True when such a fixed pairing had to be chosen.
+    """
+
+    sources: list
+    goals: list
+    keys: list
+    paired: bool = False
+
+
+def tracked_cards(start, target):
+    """Which cards must finish where, allowing indifferent (X) cards on both sides.
+
+    A card named in both orders must move to its place in the target. A card
+    the target names but the start doesn't comes from one of the start's X
+    cards; a card the start names but the target doesn't goes to one of the
+    target's X spots. While only one of those two kinds occurs, the leftover
+    cards fall into the right spots by themselves and need no tracking. When
+    both occur, the smaller kind is paired up with X cards in order, which is
+    one choice of many, so the result is marked ``paired``.
+    """
+    src, dst = _named(start), _named(target)
+    x_src = [i for i, c in enumerate(start) if c.indifferent]
+    x_dst = [j for j, c in enumerate(target) if c.indifferent]
+    needed = sorted(j for k, j in dst.items() if k not in src)  # filled from start X cards
+    spare = sorted(i for k, i in src.items() if k not in dst)  # go to target X spots
+    if (len(start) != len(target) or len(src) + len(x_src) != len(start)
+            or len(dst) + len(x_dst) != len(target)
+            or len(needed) > len(x_src) or len(spare) > len(x_dst)):
+        raise ValueError("the two orders must contain the same cards (X stands for any card)")
+    pairs = [(dst[k], i, k) for k, i in src.items() if k in dst]  # (goal, source, key)
+    paired = bool(needed and spare)
+    if paired and len(needed) <= len(spare):
+        pairs += [(j, i, None) for j, i in zip(needed, x_src)]
+    elif paired:
+        pairs += [(j, i, start[i].key) for j, i in zip(x_dst, spare)]
+    pairs.sort(key=lambda p: p[0])
+    return Tracked([i for _j, i, _k in pairs], [j for j, _i, _k in pairs],
+                   [k for _j, _i, k in pairs], paired)
+
+
+def _named(cards):
+    """key -> position of every named (not indifferent) card; duplicates keep one."""
+    return {c.key: i for i, c in enumerate(cards) if not c.indifferent}
 
 
 def find_path(start, target, stones=(), depth=SHORTEST_DEPTH, cancel=None, progress=None,
               improved=None):
     """A list of Steps that turns ``start`` into ``target`` (same cards, any order).
 
+    Either order may hold indifferent (X) cards (see ``tracked_cards``).
     ``stones`` are other orders of the same cards that routes may pass through.
     Every route of up to ``depth`` shuffles is searched, so a result that short
     is a shortest one. ``cancel()`` is polled, and SearchCancelled is raised
@@ -104,8 +156,8 @@ def find_path(start, target, stones=(), depth=SHORTEST_DEPTH, cancel=None, progr
     """
     if not 1 <= depth <= MAX_DEPTH:
         raise ValueError(f"search depth must be between 1 and {MAX_DEPTH}, got {depth}")
-    v = target_positions(start, target)
-    n = len(v)
+    tracked = tracked_cards(start, target)
+    n = len(start)
     if n > 256:
         raise ValueError("decks of more than 256 cards are not supported")
     report = _Reporter(cancel, progress)
@@ -114,7 +166,8 @@ def find_path(start, target, stones=(), depth=SHORTEST_DEPTH, cancel=None, progr
     faro_moves = _moves(_faro_steps(n), n)
     near_f = min(STORED_DEPTH, (depth + 1) // 2)
     near_b = min(STORED_DEPTH, depth // 2)
-    origin, goal = _state(v), _state(range(n))
+    # A state holds the positions of the tracked cards only, in goal order.
+    origin, goal = bytes(tracked.sources), bytes(tracked.goals)
     fwd = _side(origin, moves, faro_moves, True, near_f, report)
     bwd = _side(goal, moves, faro_moves, False, near_b, report)
     found = _meet(fwd, bwd)
@@ -126,8 +179,8 @@ def find_path(start, target, stones=(), depth=SHORTEST_DEPTH, cancel=None, progr
         candidates = []
         for k, stone in enumerate(stones):
             report(k / len(stones), "Trying known stacks as a midpoint…", force=True)
-            w = _state(target_positions(stone, target))
-            if w in (origin, goal):
+            w = _stone_state(stone, tracked.keys)
+            if w is None or w in (origin, goal):
                 continue
             first = _meet(fwd, _side(w, moves, faro_moves, False, near_b, report))
             if first is None:
@@ -135,7 +188,7 @@ def find_path(start, target, stones=(), depth=SHORTEST_DEPTH, cancel=None, progr
             second = _meet(_side(w, moves, faro_moves, True, near_f, report), bwd)
             if second is not None:
                 candidates.append(_merge_cuts(first + second, n))
-        candidates.append(_constructive(v))
+        candidates.append(_constructive(_full_targets(tracked, n)))
         return min(candidates, key=len)
 
     stones = list(stones)
@@ -154,19 +207,36 @@ def find_path(start, target, stones=(), depth=SHORTEST_DEPTH, cancel=None, progr
         if targets is None:
             # From depth 6 up, one more backward layer is kept as keys, which saves
             # streaming a whole forward layer (about 300 times the work).
-            targets = _Targets(bwd, moves, n, near_b, depth >= covered + 2, report)
+            targets = _Targets(bwd, moves, len(goal), near_b, depth >= covered + 2, report)
             roots = [(state, path) for state, path in fwd.items() if len(path) == near_f]
         hit = _stream(roots, moves, targets, length - near_f - targets.depth, length, report,
                       f"Checking routes of {length} shuffles…", best.offer)
         if hit is not None and (found is None or len(hit) < len(found)):
             found = hit
     if found is not None and len(found) <= depth:
-        return PathResult(found, True)
+        return PathResult(found, not tracked.paired, tracked.paired)
 
     if backup is None:
         backup = fallback()
     candidates = [found, backup] if found is not None else [backup]
-    return PathResult(min(candidates, key=len), False)
+    return PathResult(min(candidates, key=len), False, tracked.paired)
+
+
+def _stone_state(stone, keys):
+    """The tracked cards' positions in a known stack, or None if it can't be used."""
+    where = _named(stone)
+    if any(k not in where for k in keys):  # also an X picked to become a card (key None)
+        return None
+    return bytes(where[k] for k in keys)
+
+
+def _full_targets(tracked, n):
+    """``v[i]`` = where the card at i finishes: tracked ones as required, the rest in order."""
+    v = [None] * n
+    for i, j in zip(tracked.sources, tracked.goals):
+        v[i] = j
+    free = iter(sorted(set(range(n)) - set(tracked.goals)))
+    return [next(free) if j is None else j for j in v]
 
 
 # --- search ------------------------------------------------------------------------
@@ -202,14 +272,6 @@ class _Best:
         self.steps = steps
         if self.improved is not None:
             self.improved(list(steps))
-
-
-def _state(v):
-    """Search form of a deck: ``state[c]`` is the position of card c (``v[i]`` = card at i)."""
-    pos = bytearray(len(v))
-    for i, c in enumerate(v):
-        pos[c] = i
-    return bytes(pos)
 
 
 def _moves(steps, n):
@@ -316,7 +378,7 @@ class _Targets:
     """
 
     def __init__(self, bwd, moves, n, near, deep, report):
-        self.n, self.sample = n, _sample(n)
+        self.n, self.sample = n, _sample(n)  # n: cards in a state (the tracked ones)
         self.steps = [step for step, _f, _b in moves]
         self.back = [b for _s, _f, b in moves]
         self.stored = list(bwd.items())

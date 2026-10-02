@@ -120,7 +120,8 @@ class XToYTab:
 
         label_row = tb.Frame(frame)
         label_row.pack(fill=tk.X, pady=(6, 0))
-        tb.Label(label_row, text="Shorthand (e.g.  A-KH, A-KC, K-AD, K-AS):").pack(side=tk.LEFT)
+        tb.Label(label_row, text="Shorthand (e.g.  A-KH, A-KC, K-AD, K-AS;  X = any card):").pack(
+            side=tk.LEFT)
         tb.Button(label_row, text="View cards",
                   command=lambda: self.view_cards(side)).pack(side=tk.RIGHT)
         text = tb.Text(frame, height=5, width=52, wrap=tk.WORD, font=MONO, undo=True)
@@ -370,8 +371,10 @@ class XToYTab:
             self.errors[side].config(text=f"⚠ {m.errors[side]}" if m.errors[side] else "")
             report = m.report(side)
             if report.ok:
-                self.statuses[side].config(text="✓ Full 52-card deck, no duplicates.",
-                                           bootstyle="success")
+                x = report.indifferent
+                text = ("✓ Full 52-card deck, no duplicates." if not x else
+                        f"✓ 52 cards, no duplicates; {x} indifferent (X).")
+                self.statuses[side].config(text=text, bootstyle="success")
             else:
                 self.statuses[side].config(text="\n".join(report.messages()),
                                            bootstyle="danger")

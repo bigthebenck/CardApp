@@ -121,6 +121,46 @@ def test_mismatched_cards_rejected():
         path_finder.find_path(NDO, other)
 
 
+def x_matches(got, want):
+    return all(w.indifferent or g.key == w.key for g, w in zip(got, want))
+
+
+def test_indifferent_target_cards_are_not_tracked():
+    end = simulate(NDO, [OUT, Step(ops.CUT, 10), Step(ops.OVERHAND_RUN, 7)])
+    loose = [c if c.key in ("AS", "KD") else deck.indifferent_card() for c in end]
+    result = path_finder.find_path(NDO, loose, depth=3)
+    assert result.shortest and not result.paired
+    assert x_matches(simulate(NDO, result.steps), loose) and len(result.steps) <= 3
+
+
+def test_indifferent_start_cards_stand_for_needed_cards():
+    tracked = path_finder.tracked_cards([deck.indifferent_card()] + NDO[1:], NDO)
+    assert len(tracked.goals) == 51 and 0 not in tracked.sources and not tracked.paired
+    x = deck.indifferent_card()
+    assert path_finder.find_path([x] + NDO[1:], NDO).steps == []
+    # the X and the ace of clubs must swap roles: the X becomes the ace at the bottom
+    result = path_finder.find_path(NDO[1:] + [x], NDO)
+    assert simulate(list(range(52)), result.steps)[0] == 51 and result.shortest
+
+
+def test_indifferent_cards_on_both_sides_are_paired():
+    x = deck.indifferent_card()
+    start, end = [x] + NDO[1:], NDO[:-1] + [x]
+    tracked = path_finder.tracked_cards(start, end)
+    assert tracked.paired and None in tracked.keys
+    result = path_finder.find_path(start, end, deck.PRESETS.values(), depth=2)
+    assert result.paired and not result.shortest and result.steps == []
+
+
+def test_indifferent_cards_must_cover_the_differences():
+    x = deck.indifferent_card()
+    assert path_finder.find_path(NDO, [x] * 52).steps == []  # anything will do
+    with pytest.raises(ValueError, match="same cards"):
+        path_finder.find_path(NDO, [x] * 51)
+    with pytest.raises(ValueError, match="same cards"):
+        path_finder.tracked_cards(NDO[:-1] + [NDO[0]], [x] * 52)  # duplicate in the start
+
+
 def test_depth_limits_what_counts_as_shortest():
     seq = [Step(ops.OUT_FARO), Step(ops.CUT, 10), Step(ops.OVERHAND_RUN, 7)]
     end = simulate(NDO, seq)

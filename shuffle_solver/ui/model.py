@@ -325,7 +325,9 @@ class XToYModel:
 
     Finding a path takes seconds (minutes at depth 7), so it only runs on
     ``solve()``, or ``search()`` on a worker thread; any edit to either order
-    clears the old answer.
+    clears the old answer. Either order may hold indifferent (X) cards: an X
+    in the ending order takes any card, and an X in the starting order is
+    filled in with whatever card the ending order needs where it lands.
     """
 
     SIDES = ("start", "end")
@@ -358,7 +360,7 @@ class XToYModel:
     def set_from_text(self, side, text):
         """Parse shorthand for one side; returns the error message or None."""
         try:
-            self.set_cards(side, deck.parse_cards(text))
+            self.set_cards(side, deck.parse_cards(text, allow_indifferent=True))
         except ValueError as exc:
             if self.errors[side] != str(exc):
                 self.errors[side] = str(exc)
@@ -398,7 +400,12 @@ class XToYModel:
                                                self.depth, cancel, progress))
 
     def set_outcome(self, outcome):
+        """Show ``outcome``. A finished, verified route also fills in the starting
+        order's X cards with the cards they must be (a route still being
+        searched leaves the order alone, as editing it would stop the search)."""
         self.outcome = outcome
+        if outcome.status == "ok" and outcome.verified and outcome.states:
+            self.cards["start"] = list(outcome.states[0])
         self._changed()
         return outcome
 
@@ -417,8 +424,7 @@ class XToYModel:
                 **{side: [str(c) for c in self.cards[side]] for side in self.SIDES}}
 
     def load_dict(self, data):
-        cards = {side: [_card(t, allow_indifferent=False) for t in data.get(side, [])]
-                 for side in self.SIDES}
+        cards = {side: [_card(t) for t in data.get(side, [])] for side in self.SIDES}
         self.set_depth(int(data.get("depth", path_finder.SHORTEST_DEPTH)))
         self.cards, self.errors = cards, {side: None for side in self.SIDES}
         self._invalidate()
@@ -429,15 +435,42 @@ def _shuffles(n):
     return f"{n} shuffle{'s' if n != 1 else ''}"
 
 
+def fill_indifferent(start, end, steps):
+    """``start`` with each X that lands on a card named in ``end`` replaced by that card.
+
+    The filled card keeps the X's face-up flag; an X landing on an X stays one.
+    """
+    n = len(start)
+    filled = list(start)
+    for i, j in enumerate(solver.composed_positions(steps, n)):
+        if start[i].indifferent and not end[j].indifferent:
+            filled[i] = deck.Card(end[j].rank, end[j].suit, start[i].face_up)
+    return filled
+
+
+def _route_states(start, end, steps):
+    """(states from the filled-in start, whether every card named in ``end`` arrives)."""
+    states = solver.intermediate_states(fill_indifferent(start, end, steps), steps)
+    verified = all(e.indifferent or c.key == e.key for c, e in zip(states[-1], end))
+    return states, verified
+
+
+def _filled_note(start, states):
+    """A note when the route turned X cards of the starting order into named cards."""
+    if any(x.indifferent and not c.indifferent for x, c in zip(start, states[0])):
+        return ["The starting order's X cards are filled in with the cards they must be."]
+    return []
+
+
 def best_so_far(start, end, steps):
     """A "searching" outcome for a route found while a search is still running."""
-    states = solver.intermediate_states(start, steps)
-    verified = [c.key for c in states[-1]] == [c.key for c in end]
+    states, verified = _route_states(start, end, steps)
     msg = (f"Best so far: {_shuffles(len(steps))} (verified). Still looking for a "
            "shorter route; you can use this one or cancel and keep it.")
     if not verified:
         msg = "Check failed: these shuffles do not produce the ending order."
-    return PathOutcome("searching", [msg], steps, states, verified)
+    return PathOutcome("searching", [msg, *_filled_note(start, states)], steps, states,
+                       verified)
 
 
 def cancelled_outcome(best):
@@ -460,20 +493,25 @@ def search_outcome(start, end, depth, cancel=None, progress=None, improved=None)
     on_route = None if improved is None else (lambda s: improved(best_so_far(start, end, s)))
     found = path_finder.find_path(start, end, deck.PRESETS.values(), depth, cancel, progress,
                                   on_route)
-    states = solver.intermediate_states(start, found.steps)
-    verified = [c.key for c in states[-1]] == [c.key for c in end]
+    states, verified = _route_states(start, end, found.steps)
     n = len(found.steps)
     if not verified:
         msg = "Check failed: these shuffles do not produce the ending order."
     elif n == 0:
-        msg = "The two orders are already the same; no shuffles needed."
+        msg = "The two orders already match; no shuffles needed."
     elif found.shortest:
-        msg = f"Verified. {n} shuffle{'s' if n != 1 else ''}, the fewest possible."
+        msg = f"Verified. {_shuffles(n)}, the fewest possible."
+    elif found.paired and n <= depth:
+        msg = (f"Verified. {_shuffles(n)}. Both orders have X cards where the other names "
+               "cards, so they were paired up one fixed way; another pairing may be shorter.")
     else:
         msg = (f"Verified. {n} shuffles. No sequence of {depth} or fewer exists; this "
                "is the shortest route found, not necessarily the shortest possible.")
-    return PathOutcome("ok" if verified else "failed", [msg], found.steps, states,
-                       verified, found.shortest)
+        if found.paired:
+            msg = (f"Verified. {n} shuffles. None of {depth} or fewer was found; this "
+                   "is the shortest route found, not necessarily the shortest possible.")
+    return PathOutcome("ok" if verified else "failed", [msg, *_filled_note(start, states)],
+                       found.steps, states, verified, found.shortest)
 
 
 def format_instructions(steps, states=None):

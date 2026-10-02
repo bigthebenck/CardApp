@@ -153,6 +153,14 @@ then press **Find shuffles** to get numbered instructions that turn X into Y.
   just turns the circle, and "cut s, then overhand run L" reverses any arc
   of it, so arc reversals can sort the deck.
 
+- Either order may use indifferent cards (`X`, `X12`). An X in Y means any
+  card will do there, so only Y's named cards are matched (and the search is
+  faster the fewer cards Y names). An X in X stands for whichever card Y needs
+  where it lands: once a route is found, the starting order is rewritten with
+  those X cards filled in. X cards that land on X spots stay indifferent. When both orders have X cards where the other
+  names cards, the extra cards are paired with X spots one fixed way, so the
+  route is not guaranteed to be the shortest.
+
 Every answer is replayed forward and checked against Y (the PASS badge).
 
 ### Stack Trainer tab
@@ -225,8 +233,9 @@ cards takes `X5` to add five of them, and a rearrangement must keep as many X
 cards as the table has. X cards can't be taken out by name. **Name X cards**
 (Cards & packets) says which cards the X cards at a position are, e.g. when a
 faro would split at one. The name reaches back too: earlier tables and split
-notes show that card, back to where the X first appeared. X to Y and the Stack
-Trainer need every card named, so they reject X.
+notes show that card, back to where the X first appeared. X to Y takes X cards
+in either order (see its section). The Stack Trainer needs every card named,
+so it rejects X.
 
 ## Layout
 

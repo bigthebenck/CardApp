@@ -143,9 +143,10 @@ def test_indifferent_cards_saved_and_loaded(tmp_path):
     assert m2.slots == m.slots
 
 
-def test_x_to_y_rejects_indifferent_cards():
+def test_x_to_y_accepts_indifferent_cards():
     m = XToYModel()
-    assert "indifferent" in m.set_from_text("end", "AS, X51")
+    assert m.set_from_text("end", "AS, X51") is None
+    assert m.report("end").ok and m.report("end").indifferent == 51
 
 
 def test_too_many_cards_is_an_error():
@@ -253,6 +254,40 @@ def test_x_to_y_depth_setting():
     assert m.solve().shortest
     with pytest.raises(ValueError):
         m.set_depth(0)
+
+
+def test_x_to_y_indifferent_end_only_places_named_cards():
+    m = XToYModel()
+    m.load_preset("start", "New deck order")
+    m.set_from_text("end", "X9, AS, X42")  # ace of spades 10th, anything else anywhere
+    out = m.solve()
+    assert out.status == "ok" and out.verified and out.shortest
+    assert out.states[-1][9].key == "AS" and len(out.steps) <= 2
+    assert out.states[0] == NDO and len(out.messages) == 1  # no X in the start to fill
+
+
+def test_x_to_y_fills_indifferent_start_cards():
+    m = XToYModel()
+    m.set_from_text("start", "X, A-QS, X39")  # king of spades unknown, at the top
+    m.set_from_text("end", "A-KS, X39")
+    out = m.solve()
+    assert out.status == "ok" and out.verified and out.shortest
+    assert [c.key for c in out.states[-1][:13]] == [c.key for c in deck.parse_cards("A-KS")]
+    assert m.cards["start"] == out.states[0]  # the starting order is filled in
+    assert sum(c.key == "KS" for c in m.cards["start"]) == 1  # an X became the king
+    assert sum(c.indifferent for c in m.cards["start"]) == 39  # the rest stay X
+    assert "filled in" in out.messages[1]
+    assert m.outcome is out and m.solve().steps == out.steps  # solving again: same route
+
+
+def test_x_to_y_pairs_x_cards_when_both_sides_need_them():
+    m = XToYModel()
+    m.set_from_text("start", "X, A-KC, A-KH, A-KS, 2-KD")  # AD unknown
+    m.set_from_text("end", "A-KH, A-KS, 2-QD, X, AD, A-KC")  # cut 14; KD doesn't matter
+    out = m.solve()
+    assert out.status == "ok" and out.verified and not out.shortest
+    assert out.steps == [Step(ops.CUT, 14)] and out.states[-1][38].key == "AD"
+    assert "paired up" in out.messages[0] and m.cards["start"][0].key == "AD"
 
 
 def test_x_to_y_shorthand_error_and_swap():
@@ -702,8 +737,9 @@ def test_x_to_y_round_trip_keeps_orders_and_depth():
     assert again.cards == m.cards and again.depth == 3
     assert again.cards["end"][0].face_up
     assert again.outcome.status == "waiting"  # an answer is found again, not saved
-    with pytest.raises(ValueError):
-        again.load_dict({"start": ["X"]})  # X to Y has no indifferent cards
+    m.set_from_text("end", "X`, AS, X50")
+    again.load_dict(m.to_dict())
+    assert again.cards == m.cards and again.cards["end"][0].indifferent
     with pytest.raises(ValueError):
         again.load_dict({"depth": 99})
 
