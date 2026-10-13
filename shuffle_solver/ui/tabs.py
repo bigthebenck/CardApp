@@ -13,6 +13,10 @@ right-click it for a menu of all of these (and, if the owner can copy tabs,
 "Duplicate"). When the tabs don't fit, the strip
 scrolls: with the mouse wheel over it, with the ‹ › arrows that appear at its
 ends, or by dragging a tab past an end. The tab on show is kept in view.
+
+A new tab's header slides open and a closed one's gap slides shut, and a dragged
+tab follows the mouse while its neighbours slide out of its way (only the strip
+is animated: the tab's content appears and goes at once).
 """
 
 import tkinter as tk
@@ -22,6 +26,9 @@ import ttkbootstrap as tb
 
 SELECTED, UNSELECTED = "TabSelected", "Tab"  # style prefixes, set up in theme.py
 SCROLL_STEP = 40  # pixels per wheel notch; an arrow click scrolls 3 steps
+ANIMATION_MS = 120  # how long a tab header takes to slide open or shut; 0: no animation
+ANIMATION_STEP_MS = 15
+DRAG_START = 4  # pixels the mouse must move before a pressed tab starts to drag
 
 
 @dataclass
@@ -41,6 +48,15 @@ class Tab:
     entry: object = field(default=None, repr=False)  # the rename box, while renaming
 
 
+@dataclass(eq=False)
+class Lifted:
+    """A tab being dragged: its header follows the mouse, a gap keeps its place."""
+    tab: Tab
+    gap: object
+    width: int
+    grab: int  # how far into the header the mouse took hold of it
+
+
 class TabManager:
     def __init__(self, parent, kinds, on_change=None, on_duplicate=None):
         """``kinds``: {kind: TabKind}, in the order the "New tab" menu lists them.
@@ -56,6 +72,9 @@ class TabManager:
         self.current = None
         self._recent = []  # tabs, the most recently shown last
         self._drag = None
+        self._press_x = None  # where the mouse went down, until it has moved DRAG_START
+        self._lifted = None  # the tab header following the mouse, as a ``Lifted``
+        self._spacers = []  # the shrinking gaps left by tabs just closed or dragged on
 
         self.frame = tb.Frame(parent)
         self.bar = tb.Frame(self.frame)
@@ -81,6 +100,8 @@ class TabManager:
                              lambda e: self.post_new_menu(self.add_button))
         self.body = tb.Frame(self.frame, padding=(0, 6, 0, 0))
         self.body.pack(side=tk.BOTTOM, fill=tk.BOTH, expand=True)
+        # Each kind of tab asks for a different size; don't let that resize the window.
+        self.body.pack_propagate(False)
 
         self.new_menu = tb.Menu(self.frame, tearoff=False)
         for kind, spec in self.kinds.items():
@@ -123,6 +144,8 @@ class TabManager:
         self._build_header(tab)
         self.tabs.append(tab)
         self._pack_headers()
+        if select and self._animating():
+            self._slide_open(tab)
         if select or self.current is None:
             self.select(tab)
         else:
@@ -156,18 +179,23 @@ class TabManager:
         """Close ``tab``; the one to its right (else its left) is shown instead."""
         if tab not in self.tabs:
             return
+        self._land()
         index = self.tabs.index(tab)
         self.tabs.remove(tab)
         self._recent.remove(tab)
-        if tab is self.current:
+        was_current = tab is self.current
+        if was_current:
             self.current = None
-            if self.tabs:
-                self.select(self.tabs[min(index, len(self.tabs) - 1)])
+        if self.tabs and self._animating():
+            self._slide_shut(tab, index)
         close = getattr(tab.content, "close", None)
         if close is not None:
             close()
+        # Gone before the next tab is shown, so the two are never drawn together.
         tab.header.destroy()
         tab.content.frame.destroy()
+        if was_current and self.tabs:
+            self.select(self.tabs[min(index, len(self.tabs) - 1)])
         self._show_body()
         if self.current is not None:
             self.scroll_into_view(self.current)
@@ -184,7 +212,10 @@ class TabManager:
             return
         self.tabs.remove(tab)
         self.tabs.insert(index, tab)
-        self._pack_headers()
+        if self._lifted is not None and self._lifted.tab is tab:
+            self._move_gap(index)
+        else:
+            self._pack_headers()
         self.scroll_into_view(tab)
         self._changed()
 
@@ -233,7 +264,7 @@ class TabManager:
         middle, right = ("<Button-3>", "<Button-2>") if self._is_aqua() else (
             "<Button-2>", "<Button-3>")
         for widget in (tab.header, tab.label):
-            widget.bind("<ButtonPress-1>", lambda e: self._press(tab))
+            widget.bind("<ButtonPress-1>", lambda e: self._press(tab, e.x_root))
             widget.bind("<B1-Motion>", lambda e: self._drag_to(tab, e.x_root))
             widget.bind("<ButtonRelease-1>", lambda e: self._release())
             widget.bind("<Double-Button-1>", lambda e: self.start_rename(tab))
@@ -244,10 +275,148 @@ class TabManager:
         return self.frame.tk.call("tk", "windowingsystem") == "aqua"
 
     def _pack_headers(self):
+        self._land()
+        for spacer in self._spacers:  # a gap still closing would end up out of place
+            spacer.destroy()
+        self._spacers.clear()
         for tab in self.tabs:
             tab.header.pack_forget()
         for tab in self.tabs:
             tab.header.pack(side=tk.LEFT, padx=(0, 2))
+
+    # --- animation --------------------------------------------------------------------
+
+    def _animating(self):
+        """Whether to animate: not when turned off, nor while the strip isn't on screen."""
+        return ANIMATION_MS > 0 and bool(self.bar.winfo_viewable())
+
+    def _animate(self, widget, apply, done=None):
+        """Call ``apply(f)`` with ``f`` going from just above 0 up to 1, then ``done()``.
+
+        Stops (without calling ``done``) if the widget is destroyed on the way, or if
+        another animation of it starts, or ``_stop_animation(widget)`` is called.
+        """
+        # A fixed number of steps, each one drawn, rather than following the clock: the
+        # new tab's content is slow to draw, and would otherwise use up the whole time.
+        steps = max(ANIMATION_MS // ANIMATION_STEP_MS, 1)
+        token = widget._animation = object()
+
+        def step(i):
+            if not widget.winfo_exists() or widget._animation is not token:
+                return
+            apply(1 - (1 - i / steps) ** 2)  # fast at first, settling at the end
+            widget.update_idletasks()
+            if i < steps:
+                self.frame.after(ANIMATION_STEP_MS, step, i + 1)
+            elif done is not None:
+                done()
+
+        self.frame.after(ANIMATION_STEP_MS, step, 1)
+
+    @staticmethod
+    def _stop_animation(widget):
+        widget._animation = None
+
+    def _animate_width(self, widget, start, end, done=None):
+        """Take ``widget`` from ``start`` to ``end`` pixels wide, then call ``done()``."""
+        widget.config(width=max(start, 1))
+        self._animate(widget, lambda f: widget.config(
+            width=max(round(start + (end - start) * f), 1)), done)
+
+    def _gap(self, width, height):
+        """A blank frame for the strip, as big as the tab header it stands in for."""
+        gap = tb.Frame(self.strip, width=max(width, 1), height=height)
+        self._add_scroll_tag(gap)
+        return gap
+
+    def _shrink_away(self, gap, width):
+        """Close ``gap`` (now ``width`` pixels wide) up, and destroy it."""
+        self._spacers.append(gap)
+
+        def done():
+            gap.destroy()
+            if gap in self._spacers:
+                self._spacers.remove(gap)
+
+        self._animate_width(gap, width, 1, done)
+
+    def _slide_open(self, tab):
+        """Grow a new tab's header from nothing to its full width."""
+        header = tab.header
+        width = tab.label.winfo_reqwidth() + tab.close_label.winfo_reqwidth() + 4
+        height = max(tab.label.winfo_reqheight(), tab.close_label.winfo_reqheight())
+        header.pack_propagate(False)  # so the header can be narrower than what's in it
+        header.config(height=height)
+
+        def done():
+            header.pack_propagate(True)
+            if tab in self.tabs:
+                self.scroll_into_view(tab)
+
+        self._animate_width(header, 1, width, done)
+
+    def _slide_shut(self, tab, index):
+        """Leave a gap where ``tab``'s header was (at ``index``) and shrink it away."""
+        width = tab.header.winfo_width()
+        spacer = self._gap(width, tab.header.winfo_height())
+        before = self.tabs[index].header if index < len(self.tabs) else None
+        spacer.pack(side=tk.LEFT, padx=(0, 2), before=before)
+        self._shrink_away(spacer, width)
+
+    # A dragged tab's header is lifted out of the row and follows the mouse, leaving a
+    # gap where it will land. As it passes a neighbour, that gap closes up and a new
+    # one opens on the neighbour's other side, which slides the neighbour across.
+
+    def _lift(self, tab, x_root):
+        header = tab.header
+        width, x, y = header.winfo_width(), header.winfo_x(), header.winfo_y()
+        gap = self._gap(width, header.winfo_height())
+        gap.pack(side=tk.LEFT, padx=(0, 2), before=header)
+        self._lifted = Lifted(tab, gap, width, x_root - header.winfo_rootx())
+        header.pack_forget()
+        header.place(x=x, y=y)
+        header.lift()
+
+    def _follow(self, x_root):
+        """Keep the lifted header under the mouse, within the part of the strip on show."""
+        lifted = self._lifted
+        left, right = self.visible_span()
+        x = x_root - self.strip.winfo_rootx() - lifted.grab
+        lifted.tab.header.place_configure(x=max(min(x, right - lifted.width), left, 0))
+
+    def _move_gap(self, index):
+        """Open a gap at ``index``, the lifted tab's new place, and close the old one."""
+        lifted = self._lifted
+        old, lifted.gap = lifted.gap, self._gap(1, lifted.gap.winfo_height())
+        if index + 1 < len(self.tabs):
+            lifted.gap.pack(side=tk.LEFT, padx=(0, 2), before=self.tabs[index + 1].header)
+        else:
+            lifted.gap.pack(side=tk.LEFT, padx=(0, 2), after=self.tabs[index - 1].header)
+        self._animate_width(lifted.gap, 1, lifted.width)
+        self._shrink_away(old, old.winfo_width())
+        lifted.tab.header.lift()  # the new gap would otherwise cover it
+
+    def _settle(self):
+        """Slide the lifted header from where it was let go into its gap."""
+        lifted = self._lifted
+        header, start = lifted.tab.header, lifted.tab.header.winfo_x()
+        if not self._animating():
+            self._land()
+            return
+        self._animate(header, lambda f: header.place_configure(
+            x=round(start + (lifted.gap.winfo_x() - start) * f)), self._land)
+
+    def _land(self):
+        """Put the lifted header (if any) back in the row, in place of its gap."""
+        lifted, self._lifted = self._lifted, None
+        if lifted is None:
+            return
+        header = lifted.tab.header
+        self._stop_animation(header)
+        header.place_forget()
+        header.pack(side=tk.LEFT, padx=(0, 2), before=lifted.gap)
+        self._stop_animation(lifted.gap)
+        lifted.gap.destroy()
 
     # --- scrolling --------------------------------------------------------------------
 
@@ -329,14 +498,23 @@ class TabManager:
         if 0 <= event.x < w.winfo_width() and 0 <= event.y < w.winfo_height():
             self.close(tab)
 
-    def _press(self, tab):
+    def _press(self, tab, x_root=None):
+        self._land()  # a tab still sliding home from the last drag
         self.select(tab)
         self._drag = tab
+        self._press_x = x_root
 
     def _drag_to(self, tab, x_root):
         """Move the dragged tab past a neighbour once the mouse crosses its middle."""
         if self._drag is not tab or tab.entry is not None:
             return
+        if self._press_x is not None:
+            if abs(x_root - self._press_x) < DRAG_START:
+                return
+            self._press_x = None
+        # Lifted to follow the mouse, unless it is still sliding open.
+        if self._lifted is None and self._animating() and tab.header.pack_propagate():
+            self._lift(tab, x_root)
         tab.header.config(cursor="sb_h_double_arrow")
         tab.label.config(cursor="sb_h_double_arrow")
         left = self.canvas.winfo_rootx()
@@ -345,6 +523,8 @@ class TabManager:
         elif x_root > left + self.canvas.winfo_width():
             self.scroll(1)
         self.canvas.update_idletasks()
+        if self._lifted is not None:
+            self._follow(x_root)
         while True:
             i = self.tabs.index(tab)
             if i + 1 < len(self.tabs) and x_root > self._middle(self.tabs[i + 1]):
@@ -364,6 +544,8 @@ class TabManager:
             self._drag.header.config(cursor="")
             self._drag.label.config(cursor="")
         self._drag = None
+        if self._lifted is not None:
+            self._settle()
 
     # --- menus ------------------------------------------------------------------------
 

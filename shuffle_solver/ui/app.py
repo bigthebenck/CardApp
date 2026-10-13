@@ -64,6 +64,7 @@ class ShuffleSolverApp:
         self.root = root
         root.title(APP_TITLE)
         root.minsize(1200, 700)
+        root.geometry("1380x770")  # fits the largest kind of tab; tabs don't resize the window
         self.settings_path = settings_path  # None: don't load or save the theme choice
         self.theme = theme.ThemeChoice.load(settings_path)
         self.theme.apply()

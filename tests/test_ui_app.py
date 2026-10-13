@@ -11,6 +11,7 @@ tb = pytest.importorskip("ttkbootstrap")
 from shuffle_solver import deck, solver  # noqa: E402
 from shuffle_solver import shuffle_ops as ops  # noqa: E402
 from shuffle_solver.ui import app as app_module  # noqa: E402
+from shuffle_solver.ui import tabs as tabs_module  # noqa: E402
 from shuffle_solver.ui import theme  # noqa: E402
 from shuffle_solver.ui.app import (SOLVER, STACKING, TRACKER, TRAINER, X_TO_Y,  # noqa: E402
                                    ShuffleSolverApp)
@@ -41,7 +42,11 @@ def root():
         _forget_failed_root()
         pytest.skip(f"no display: {exc}")
     root.withdraw()
+    # Tabs open and close at once, even in the tests that show the window. (Not with
+    # monkeypatch: a test that patches root.destroy must be undone before the destroy here.)
+    animation_ms, tabs_module.ANIMATION_MS = tabs_module.ANIMATION_MS, 0
     yield root
+    tabs_module.ANIMATION_MS = animation_ms
     root.destroy()
 
 
@@ -325,6 +330,140 @@ def test_tab_strip_scrolls_when_the_tabs_dont_fit(root):
     tabs.close_others(tabs.current)
     root.update()
     assert not tabs.overflowing() and tabs.visible_span()[0] == 0
+
+
+def pump(root, until, timeout=5):
+    end = time.monotonic() + timeout
+    while not until() and time.monotonic() < end:
+        root.update()
+        time.sleep(0.005)
+    assert until()
+
+
+def test_tab_headers_slide_open_and_shut(root, monkeypatch):
+    monkeypatch.setattr(tabs_module, "ANIMATION_MS", 60)
+    root.deiconify()
+    app = ShuffleSolverApp(root)
+    tabs = app.tabs
+    app.new_tab(TRAINER)  # the strip isn't on screen yet: no animation
+    root.update()
+    first = tabs.tabs[0]
+    full = first.header.winfo_width()
+    assert first.header.pack_propagate() and full > 50
+
+    app.new_tab(TRAINER)
+    second = tabs.current
+    root.update_idletasks()
+    assert second.header.winfo_width() < 10  # starts shut...
+    pump(root, lambda: second.header.pack_propagate())
+    root.update()
+    assert second.header.winfo_width() >= full  # ...and ends at its full width ("Trainer 2")
+    assert tabs.rename(second, "A much longer title")
+    root.update()
+    assert second.header.winfo_width() > full + 30  # and sizes itself again afterwards
+
+    tabs.close(first)
+    assert tabs.tabs == [second] and not first.header.winfo_exists()  # gone at once
+    (spacer,) = tabs._spacers  # leaving a gap where it was, ahead of the other tab
+    assert tabs.strip.pack_slaves() == [spacer, second.header]
+    pump(root, lambda: not tabs._spacers)
+    assert not spacer.winfo_exists() and tabs.strip.pack_slaves() == [second.header]
+
+
+def test_a_closing_gap_is_dropped_when_the_tabs_are_rearranged(root, monkeypatch):
+    monkeypatch.setattr(tabs_module, "ANIMATION_MS", 60)
+    root.deiconify()
+    app = ShuffleSolverApp(root)
+    tabs = app.tabs
+    for _ in range(3):
+        app.new_tab(TRAINER)
+    root.update()
+    a, b, c = tabs.tabs
+    tabs.close(b)
+    (spacer,) = tabs._spacers
+    tabs.move(c, 0)
+    assert not tabs._spacers and not spacer.winfo_exists()
+    assert tabs.strip.pack_slaves() == [c.header, a.header]
+    tabs.close(a)
+    tabs.close(c)  # the last tab: the strip goes, so there is no gap to close
+    assert len(tabs._spacers) == 1
+    pump(root, lambda: not tabs._spacers)
+    assert tabs.tabs == [] and not tabs.bar.winfo_manager()
+
+
+def test_a_dragged_tab_follows_the_mouse_and_slides_home(root, monkeypatch):
+    monkeypatch.setattr(tabs_module, "ANIMATION_MS", 60)
+    root.deiconify()
+    app = ShuffleSolverApp(root)
+    tabs = app.tabs
+    for kind in (SOLVER, X_TO_Y, TRACKER):
+        app.new_tab(kind)
+    pump(root, lambda: all(t.header.pack_propagate() for t in tabs.tabs))
+    root.update()
+    a, b, c = tabs.tabs
+    start = a.header.winfo_rootx() + 10
+    tabs._press(a, start)
+    tabs._drag_to(a, start + 2)  # not far enough to be a drag
+    assert tabs._lifted is None and a.header.winfo_manager() == "pack"
+
+    tabs._drag_to(a, start + 20)
+    gap = tabs._lifted.gap
+    assert a.header.winfo_manager() == "place" and tabs.strip.pack_slaves()[0] is gap
+    tabs._drag_to(a, start + 40)
+    root.update()
+    assert a.header.winfo_x() == 20 and b.header.winfo_x() == gap.winfo_width() + 2
+
+    tabs._drag_to(a, c.header.winfo_rootx() + c.header.winfo_width() - 2)
+    assert tabs.tabs == [b, c, a]  # past both neighbours: a new gap opens at the end
+    assert tabs._lifted.gap is not gap and tabs.strip.pack_slaves()[-1] is tabs._lifted.gap
+    pump(root, lambda: not tabs._spacers)  # the gaps it left behind have closed up
+    assert b.header.winfo_x() == 0 and not gap.winfo_exists()
+    tabs._drag_to(a, -10_000)  # far off to the left: it stops at the strip's edge
+    assert tabs.tabs == [a, b, c]
+    root.update()
+    assert a.header.winfo_x() == 0
+
+    tabs._release()
+    pump(root, lambda: tabs._lifted is None and not tabs._spacers)
+    root.update()
+    assert tabs.strip.pack_slaves() == [a.header, b.header, c.header]
+    assert len(tabs.strip.winfo_children()) == 3  # no gaps left over
+    assert [t.header.winfo_manager() for t in tabs.tabs] == ["pack"] * 3
+
+    tabs._press(c, 0)  # closing a tab in mid-drag puts it back first
+    tabs._drag_to(c, 100)
+    assert tabs._lifted.tab is c
+    tabs.close(c)
+    assert tabs._lifted is None and tabs.tabs == [a, b]
+    pump(root, lambda: not tabs._spacers)
+    assert tabs.strip.pack_slaves() == [a.header, b.header]
+    assert len(tabs.strip.winfo_children()) == 2
+
+
+def test_closing_a_tab_never_shows_two_at_once(app, monkeypatch):
+    app.new_tab(TRACKER)
+    app.new_tab(X_TO_Y)
+    tabs = app.tabs
+    seen = []
+    scroll_into_view = tabs.scroll_into_view
+    monkeypatch.setattr(tabs, "scroll_into_view", lambda tab: (
+        seen.append(len(tabs.body.pack_slaves())), scroll_into_view(tab)))
+    tabs.close(tabs.current)
+    assert seen and set(seen) == {1}
+
+
+def test_tabs_dont_resize_the_window(root):
+    root.deiconify()
+    app = ShuffleSolverApp(root)
+    root.update()
+    size = root.winfo_width(), root.winfo_height()
+    for kind in (TRAINER, SOLVER, STACKING):
+        app.new_tab(kind)
+        root.update()
+        assert (root.winfo_width(), root.winfo_height()) == size
+    app.close_current()
+    root.update()
+    assert (root.winfo_width(), root.winfo_height()) == size
 
 
 def test_rename_a_tab_in_place(app):
