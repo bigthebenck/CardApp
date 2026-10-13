@@ -9,6 +9,10 @@ poker hands. Each tab keeps its own state in its own model; this module only
 routes the menu, files and cross-tab hand-offs to the right tab. It contains no
 shuffle math.
 
+Two things make new tabs out of open ones: the "Open in new tab" button next
+to a deck hands its cards to a fresh tab of another kind, and "Duplicate" in a
+tab's right-click menu copies the whole tab.
+
 The open tabs are saved as a session (their kind, title and model state, and
 which one is on show) every ``AUTOSAVE_MS`` and on quitting, and reopened the
 next time the app starts. Closing every tab before quitting starts it empty.
@@ -26,6 +30,8 @@ import ttkbootstrap as tb
 from .. import deck, updater
 from . import theme
 from .model import TRACKER_FILE_TYPE
+from .open_in import TITLE as OPEN_IN_TITLE
+from .presets import PresetStore
 from .solver_tab import SolverTab, write_file
 from .stacking import StackingTab
 from .tabs import TabKind, TabManager
@@ -62,17 +68,24 @@ class ShuffleSolverApp:
         self.theme = theme.ThemeChoice.load(settings_path)
         self.theme.apply()
         self.updates = UpdateChecker(root, settings_path)
+        self.presets = PresetStore(settings_path)  # shared, so every tab sees new presets
         self._build_menu()
 
         factories = {
-            SOLVER: SolverTab,
-            X_TO_Y: XToYTab,
-            TRACKER: TrackerTab,
-            TRAINER: TrainerTab,
-            STACKING: lambda parent: StackingTab(parent, use_as_final=self.use_as_final),
+            SOLVER: lambda parent: SolverTab(parent, presets=self.presets,
+                                             open_in=self.open_in_new_tab),
+            X_TO_Y: lambda parent: XToYTab(parent, presets=self.presets,
+                                           open_in=self.open_in_new_tab),
+            TRACKER: lambda parent: TrackerTab(parent, presets=self.presets,
+                                               open_in=self.open_in_new_tab),
+            TRAINER: lambda parent: TrainerTab(parent, presets=self.presets,
+                                               open_in=self.open_in_new_tab),
+            STACKING: lambda parent: StackingTab(parent, use_as_final=self.use_as_final,
+                                                 open_in=self.open_in_new_tab),
         }
         self.tabs = TabManager(root, {kind: TabKind(TAB_TITLES[kind], factories[kind])
-                                      for kind in TAB_TITLES}, on_change=self._on_tabs_changed)
+                                      for kind in TAB_TITLES}, on_change=self._on_tabs_changed,
+                               on_duplicate=self.duplicate_tab)
         self.tabs.frame.pack(fill=tk.BOTH, expand=True, padx=6, pady=6)
         self._on_tabs_changed()
 
@@ -168,6 +181,40 @@ class ShuffleSolverApp:
         tab = self.tabs.latest(SOLVER) or self.tabs.add(SOLVER)
         tab.content.model.set_final_cards(cards)
         self.tabs.select(tab)
+
+    def open_in_new_tab(self, target, cards):
+        """Open ``cards`` in a new tab; ``target`` (a key of ``open_in.TARGETS``) says
+        which kind and which of its decks. Returns the tab's content, or None."""
+        kind, load = {
+            "final": (SOLVER, lambda m: m.set_final_cards(cards)),
+            "x": (X_TO_Y, lambda m: m.set_cards("start", cards)),
+            "y": (X_TO_Y, lambda m: m.set_cards("end", cards)),
+            "tracker": (TRACKER, lambda m: m.set_cards(cards)),
+            "trainer": (TRAINER, lambda m: m.set_cards(cards)),
+        }[target]
+        previous = self.tabs.current
+        tab = self.tabs.add(kind)
+        try:
+            load(tab.content.model)
+        except ValueError as exc:
+            self.tabs.close(tab)
+            if previous is not None:
+                self.tabs.select(previous)
+            messagebox.showerror(OPEN_IN_TITLE, f"Can't open this in a new tab: {exc}",
+                                 parent=self.root)
+            return None
+        return tab.content
+
+    def duplicate_tab(self, tab):
+        """Open a copy of ``tab`` (what a saved session would keep of it) right after it."""
+        apply_text = getattr(tab.content, "apply_text", None)
+        if apply_text is not None:
+            apply_text()  # include what was just typed in a deck box
+        state = tab.content.model.to_dict()
+        copy = self.tabs.add(tab.kind, self.tabs.unused_title(tab.title))
+        copy.content.model.load_dict(state)
+        self.tabs.move(copy, self.tabs.tabs.index(tab) + 1)
+        return copy.content
 
     def _name_after_file(self, tab, path):
         """Title a tab after its file, unless the user already named the tab."""

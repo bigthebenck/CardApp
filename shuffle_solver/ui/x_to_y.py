@@ -17,6 +17,8 @@ from .. import deck, path_finder
 from .card_viewer import CardViewers
 from .model import (PathOutcome, XToYModel, cancelled_outcome, format_instructions,
                     format_preview, search_outcome)
+from .open_in import OpenInTabButton
+from .presets import PresetBar, PresetStore
 
 TEXT_DEBOUNCE_MS = 400
 POLL_MS = 100
@@ -77,8 +79,12 @@ class _SearchJob:
 class XToYTab:
     TITLES = {"start": "X. Starting order (top first)", "end": "Y. Ending order (top first)"}
 
-    def __init__(self, parent, model=None):
+    def __init__(self, parent, model=None, presets=None, open_in=None):
+        """``open_in(target, cards)``, if given, adds "Open in new tab" buttons."""
         self.model = model or XToYModel()
+        self.presets = presets or PresetStore()
+        self.open_in = open_in
+        self.open_buttons = {}
         self.frame = tb.Frame(parent, padding=6)
         self._jobs = {}
         self._syncing = False
@@ -89,7 +95,8 @@ class XToYTab:
         self._poll_job = None  # the pending after() call to _poll
         self._phase = None  # (progress text, start time, start fraction) for the time estimate
 
-        self.texts, self.errors, self.statuses, self.preset_vars = {}, {}, {}, {}
+        self.texts, self.errors, self.statuses = {}, {}, {}
+        self.preset_bars, self.preset_vars = {}, {}
         left = tb.Frame(self.frame)
         left.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         self._build_order_panel(left, "start", self.TITLES["start"])
@@ -107,15 +114,11 @@ class XToYTab:
         frame = tb.LabelFrame(parent, text=title, padding=6)
         frame.pack(fill=tk.BOTH, expand=True)
 
-        top = tb.Frame(frame)
-        top.pack(fill=tk.X)
-        tb.Label(top, text="Preset:").pack(side=tk.LEFT)
-        var = tk.StringVar(value=next(iter(deck.PRESETS)))
-        self.preset_vars[side] = var
-        tb.Combobox(top, textvariable=var, values=list(deck.PRESETS), state="readonly",
-                    width=24).pack(side=tk.LEFT, padx=4)
-        tb.Button(top, text="Load", command=lambda: self.load_preset(side)).pack(side=tk.LEFT)
-        tb.Button(top, text="Clear",
+        bar = PresetBar(frame, self.presets, lambda: self._preset_cards(side),
+                        lambda cards: self.model.set_cards(side, cards), width=24)
+        bar.frame.pack(fill=tk.X)
+        self.preset_bars[side], self.preset_vars[side] = bar, bar.var
+        tb.Button(bar.frame, text="Clear",
                   command=lambda: self.model.set_cards(side, [])).pack(side=tk.RIGHT)
 
         label_row = tb.Frame(frame)
@@ -128,6 +131,10 @@ class XToYTab:
         text.pack(fill=tk.BOTH, expand=True)
         text.bind("<<Modified>>", lambda e: self._on_text_modified(side))
         self.texts[side] = text
+        if self.open_in is not None:
+            self.open_buttons[side] = OpenInTabButton(
+                frame, lambda: self._preset_cards(side), self.open_in)
+            self.open_buttons[side].button.pack(anchor=tk.E, pady=(4, 0))
         self.errors[side] = tb.Label(frame, text="", bootstyle="danger", wraplength=440)
         self.errors[side].pack(anchor=tk.W)
         self.statuses[side] = tb.Label(frame, text="", wraplength=440, justify=tk.LEFT)
@@ -203,7 +210,14 @@ class XToYTab:
     # --- events -------------------------------------------------------------------------
 
     def load_preset(self, side):
-        self.model.load_preset(side, self.preset_vars[side].get())
+        self.preset_bars[side].load()
+
+    def _preset_cards(self, side):
+        """One order as typed, to save as a preset."""
+        self.apply_text(side)
+        if self.model.errors[side]:
+            raise ValueError(f"fix the shorthand first ({self.model.errors[side]})")
+        return self.model.cards[side]
 
     def swap(self):
         """Swap the two orders, keeping each box's text exactly as typed."""

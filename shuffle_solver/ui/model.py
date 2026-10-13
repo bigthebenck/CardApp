@@ -989,6 +989,8 @@ class TrainerModel:
         """Why the deck can't be trained (empty list when it can)."""
         if not self.cards:
             return ["No cards yet."]
+        if any(c.indifferent for c in self.cards):  # e.g. from a saved preset
+            return ["Indifferent cards (X) can't be trained; name every card."]
         dups = deck.validate_deck(self.cards).duplicates
         return ["Duplicated: " + ", ".join(dups)] if dups else []
 

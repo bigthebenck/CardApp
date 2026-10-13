@@ -91,7 +91,8 @@ many tabs of each kind as you like; each keeps its own work.
 - Double-click its title to rename it (Enter keeps the name, Escape cancels).
 - Click its **×**, middle-click it, or press Ctrl+W to close it. Closing a tab
   throws its work away, so save first if you need it.
-- Right-click a tab for Rename, Move left/right, Close and Close other tabs.
+- Right-click a tab for Rename, Duplicate (a copy of the tab, opened next to
+  it), Move left/right, Close and Close other tabs.
 - Ctrl+Tab and Ctrl+Shift+Tab step through the tabs.
 - When there are more tabs than fit, scroll the strip with the mouse wheel or
   the **‹ ›** arrows at its ends, or drag a tab past an end.
@@ -102,6 +103,23 @@ starts, on the tab you were looking at. X to Y answers aren't kept (press
 **Find shuffles** again), and neither is the Stack Trainer's score. Close every
 tab before quitting to start empty. The session lives in
 `~/.shuffle_solver_session.json`; delete it to start afresh.
+
+### Presets
+
+Every tab with a deck has a **Preset** row. Besides the built-in stacks you
+can save your own: enter a deck, press **Save as…** and give it a name. Saved
+presets show up in every tab's list (after the built-in ones), are kept in
+`~/.shuffle_solver.json` with the other settings, and can be removed with
+**Delete**. Built-in presets can't be overwritten or deleted.
+
+### Open in new tab
+
+Next to every deck — one you typed or one a tab worked out, such as the
+starting order or a tracked deck after its shuffles — there is an **Open in
+new tab** button. Pick where the cards should go (the final deck of a Starting
+Order tab, either order of an X to Y tab, Free Tracking or Stack Trainer) and
+a fresh tab opens with them filled in; the tab you came from is left alone.
+Only the cards are carried over, not the shuffles.
 
 ### Starting Order tab
 
@@ -251,6 +269,8 @@ shuffle_solver/
   ui/tabs.py       the tab strip: add, close, rename and reorder tabs
   ui/solver_tab.py the Starting Order tab
   ui/theme.py      ttkbootstrap theme choice and the app's custom styles
+  ui/presets.py    saved user presets and the Preset row every deck tab shows
+  ui/open_in.py    the "Open in new tab" button next to each deck
   ui/x_to_y.py     the X to Y tab
   ui/trainer.py    the Stack Trainer tab
   ui/stacking.py   the Stacking tab

@@ -14,15 +14,18 @@ import ttkbootstrap as tb
 from .. import stacking
 from .card_viewer import CardViewers
 from .model import StackingModel
+from .open_in import OpenInTabButton
 
 MONO = ("Courier", 10)
 
 
 class StackingTab:
-    def __init__(self, parent, model=None, use_as_final=None):
-        """``use_as_final(cards)``, if given, adds a button that hands the stack on."""
+    def __init__(self, parent, model=None, use_as_final=None, open_in=None):
+        """``use_as_final(cards)``, if given, adds a button that hands the stack on;
+        ``open_in(target, cards)`` adds an "Open in new tab" button."""
         self.model = model or StackingModel()
         self.use_as_final = use_as_final
+        self.open_in = open_in
         self._shown_hands = None  # the hands the rows were last built for
         self.hand_vars = {}
         self.hand_errors = {}
@@ -111,6 +114,9 @@ class StackingTab:
             self.final_button = tb.Button(btns, text="Use as final deck →",
                                           command=self.send_to_final)
             self.final_button.pack(side=tk.RIGHT)
+        if self.open_in is not None:
+            self.open_button = OpenInTabButton(frame, self._stack_cards, self.open_in)
+            self.open_button.button.pack(anchor=tk.E, pady=(4, 0))
         return frame
 
     def _build_hand_rows(self):
@@ -150,6 +156,12 @@ class StackingTab:
     def send_to_final(self):
         if self.model.stack is not None:
             self.use_as_final(list(self.model.stack))
+
+    def _stack_cards(self):
+        """The stack, to open in another tab."""
+        if self.model.stack is None:
+            raise ValueError(self.model.problem)
+        return list(self.model.stack)
 
     def _copy(self, text):
         if not text:

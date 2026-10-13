@@ -1149,3 +1149,197 @@ def test_no_session_path_means_no_session(app, tmp_path):
     assert app.session_path is None and app._autosave_job is None
     app.new_tab(SOLVER)
     app.save_session()  # does nothing
+
+
+# --- saved presets ---------------------------------------------------------------------
+
+
+@pytest.fixture
+def preset_dialogs(monkeypatch):
+    """Answer the preset bar's name prompt and confirmations, and record its errors."""
+    from shuffle_solver.ui import presets
+    seen = {"name": None, "yes": True, "errors": []}
+    monkeypatch.setattr(presets.Querybox, "get_string", lambda *a, **kw: seen["name"])
+    monkeypatch.setattr(presets.messagebox, "askyesno", lambda *a, **kw: seen["yes"])
+    monkeypatch.setattr(presets.messagebox, "showerror",
+                        lambda title, msg, **kw: seen["errors"].append(msg))
+    return seen
+
+
+def test_a_saved_preset_shows_in_every_tab_and_is_remembered(root, tmp_path, preset_dialogs):
+    path = tmp_path / "settings.json"
+    app = ShuffleSolverApp(tk.Toplevel(root), settings_path=path)
+    tracker, x_to_y = app.new_tab(TRACKER), app.new_tab(X_TO_Y)
+    order = app.new_tab(SOLVER)
+    order.final_text.insert("1.0", "X, AS`, 2-4H")
+    preset_dialogs["name"] = "  My stack "
+    assert order.preset_bar.save_as() == "My stack"  # typed text counts without waiting
+    assert order.preset_var.get() == "My stack"
+    assert "My stack" in tracker.preset_bar.combo.cget("values")
+    x_to_y.preset_vars["end"].set("My stack")
+    x_to_y.load_preset("end")
+    assert x_to_y.model.cards["end"] == deck.parse_cards("X, AS`, 2-4H", allow_indifferent=True)
+    assert theme.read_settings(path)["presets"] == {"My stack": "X, AS`, 2-4H"}
+
+    again = ShuffleSolverApp(tk.Toplevel(root), settings_path=path)
+    trainer = again.new_tab(TRAINER)
+    trainer.preset_var.set("My stack")
+    trainer.load_preset()
+    assert "can't be trained" in trainer.model.unavailable_reason()
+    app.root.destroy()
+    again.root.destroy()
+
+
+def test_presets_are_not_saved_over_built_ins_or_from_bad_decks(app, preset_dialogs):
+    tab = app.new_tab(TRACKER)
+    assert tab.preset_bar.save_as("Anything") is None  # no cards yet
+    tab.deck_text.insert("1.0", "AS, (")
+    assert tab.preset_bar.save_as("Anything") is None
+    assert "fix the shorthand" in preset_dialogs["errors"][-1]
+    tab.deck_text.delete("1.0", tk.END)
+    tab.deck_text.insert("1.0", "AS, KH")
+    assert tab.preset_bar.save_as("New deck order") is None
+    assert "built-in" in preset_dialogs["errors"][-1]
+    assert app.presets.user == {}
+    assert str(tab.preset_bar.delete_button.cget("state")) == "disabled"
+
+
+def test_saving_over_a_preset_asks_and_deleting_removes_it(app, preset_dialogs):
+    tab = app.new_tab(TRAINER)
+    other = app.new_tab(SOLVER)
+    tab.deck_text.insert("1.0", "AS, KH")
+    preset_dialogs["name"] = "Two"
+    tab.preset_bar.save_as()
+    tab.deck_text.delete("1.0", tk.END)
+    tab.deck_text.insert("1.0", "QD")
+    preset_dialogs["yes"] = False
+    assert tab.preset_bar.save_as() is None  # declined to replace it
+    assert app.presets.cards("Two") == deck.parse_cards("AS, KH")
+    preset_dialogs["yes"] = True
+    tab.preset_bar.save_as()
+    assert app.presets.cards("Two") == deck.parse_cards("QD")
+
+    other.preset_var.set("Two")
+    assert str(tab.preset_bar.delete_button.cget("state")) == "normal"
+    tab.preset_bar.delete()
+    assert "Two" not in app.presets.names()
+    assert other.preset_var.get() == next(iter(deck.PRESETS))  # its pick went away
+
+
+def test_closed_tabs_stop_listening_for_new_presets(app, preset_dialogs):
+    tab = app.new_tab(SOLVER)
+    app.close_current()
+    assert app.presets._listeners == []
+    app.presets.save("After", deck.parse_cards("AS"))  # no dead tab to update
+
+
+@pytest.fixture
+def open_in_errors(monkeypatch):
+    """Record what "Open in new tab" complains about, from a button or from the app."""
+    from shuffle_solver.ui import open_in
+    errors = []
+    monkeypatch.setattr(open_in.messagebox, "showerror",
+                        lambda title, msg, **kw: errors.append(msg))
+    monkeypatch.setattr(app_module.messagebox, "showerror",
+                        lambda title, msg, **kw: errors.append(msg))
+    return errors
+
+
+def test_open_a_deck_in_a_new_tab_of_each_kind(app, open_in_errors):
+    order = app.new_tab(SOLVER)
+    order.load_preset()
+    order.sequence.add_step(ops.OUT_FARO)
+    start = list(order.model.result.start)
+    final = order.model.filled_cards()
+
+    tracker = order.open_start.open("tracker")
+    assert app.tabs.current.kind == TRACKER and app.tabs.current.content is tracker
+    assert tracker.model.cards == start
+    x_to_y = order.open_start.open("x")
+    assert x_to_y.model.cards == {"start": start, "end": []}
+    assert order.open_final.open("y").model.cards == {"start": [], "end": final}
+    assert order.open_final.open("trainer").model.cards == final
+    again = order.open_final.open("final")
+    assert again is not order and again.model.filled_cards() == final
+    assert again.model.steps == []  # only the cards are carried over
+    assert app.tabs.titles() == ["Starting Order", "Free Tracking", "X to Y", "X to Y 2",
+                                 "Stack Trainer", "Starting Order 2"]
+    assert order.model.filled_cards() == final and len(order.model.steps) == 1
+    assert open_in_errors == []
+
+    # Decks other tabs work out or take can be opened too.
+    tracker.sequence.add_step(ops.OUT_FARO)
+    tracker.show_whole_run()
+    after = list(tracker.model.states[-1].pile("A").cards)
+    assert tracker.open_buttons["after"].open("final").model.filled_cards() == after
+    assert tracker.open_buttons["deck"].open("trainer").model.cards == start
+    x_to_y.texts["end"].insert("1.0", "AS, KH")  # typed text counts without waiting
+    assert x_to_y.open_buttons["end"].open("tracker").model.cards == deck.parse_cards("AS, KH")
+    trainer = app.new_tab(TRAINER)
+    trainer.load_preset()
+    assert trainer.open_button.open("x").model.cards["start"] == trainer.model.cards
+    stacking = app.new_tab(STACKING)
+    stacking.hand_vars["Player 1"].set("AS, AH")
+    assert stacking.open_button.open("tracker").model.cards == stacking.model.stack
+    assert open_in_errors == []
+
+
+def test_open_in_new_tab_says_why_it_cant(app, open_in_errors):
+    order = app.new_tab(SOLVER)
+    assert order.open_final.open("tracker") is None  # nothing entered
+    assert "no cards" in open_in_errors[-1]
+    assert order.open_start.open("tracker") is None
+    assert "no verified starting order" in open_in_errors[-1]
+    order.final_text.insert("1.0", "AS, (")
+    assert order.open_final.open("tracker") is None
+    assert "fix the shorthand" in open_in_errors[-1]
+
+    tracker = app.new_tab(TRACKER)
+    tracker.deck_text.insert("1.0", "A-KH, A-KC, K-AD, K-AS, AS, KH")  # 54 cards
+    tracker.apply_text()
+    assert tracker.open_buttons["deck"].open("final") is None  # too many for the 52 slots
+    assert "52 slots" in open_in_errors[-1]
+    assert app.tabs.titles() == ["Starting Order", "Free Tracking"]  # the new tab was closed
+    assert app.tabs.current.content is tracker
+
+    tracker.load_preset()
+    tracker.sizes_var.set("10, 42")
+    assert tracker.split()
+    tracker.show_whole_run()
+    assert tracker.open_buttons["after"].open("trainer") is None
+    assert "several piles" in open_in_errors[-1]
+    assert len(tracker.open_buttons["before"].open("trainer").model.cards) == 52
+    assert len(open_in_errors) == 5
+
+    stacking = app.new_tab(STACKING)
+    stacking.hand_vars["Player 1"].set("AS")
+    stacking.hand_vars["Player 2"].set("AS")
+    assert stacking.open_button.open("final") is None
+    assert "Wanted twice" in open_in_errors[-1]
+
+
+def test_duplicate_a_tab(app):
+    order = app.new_tab(SOLVER)
+    app.new_tab(TRAINER)
+    tab = app.tabs.tabs[0]
+    app.tabs.rename(tab, "Aces")
+    order.final_text.insert("1.0", "A-KH, A-KC, K-AD, K-AS")
+    order.frame.update()  # the edit is pending when the tab is copied
+    order.sequence.add_step(ops.OUT_FARO)
+
+    copy = app.duplicate_tab(tab)
+    assert app.tabs.titles() == ["Aces", "Aces 2", "Stack Trainer"]
+    assert app.tabs.current.content is copy and copy is not order
+    assert copy.model.to_dict() == order.model.to_dict()
+    assert copy.badge.cget("text") == "PASS" and len(copy.model.steps) == 1
+    copy.model.clear_final()
+    assert len(order.model.filled_cards()) == 52  # the two don't share anything
+
+    menu = app.tabs.tab_menu
+    menu.tk_popup = lambda *a: None  # build the right-click menu without showing it
+    app.tabs._post_tab_menu(tab, type("Event", (), {"x_root": 0, "y_root": 0}))
+    labels = [menu.entrycget(i, "label") for i in range(menu.index("end") + 1)
+              if menu.type(i) == "command"]
+    assert labels[:2] == ["Rename…", "Duplicate"]
+    menu.invoke(1)
+    assert app.tabs.titles() == ["Aces", "Aces 3", "Aces 2", "Stack Trainer"]

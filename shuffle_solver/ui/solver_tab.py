@@ -14,6 +14,8 @@ from .. import deck
 from .. import shuffle_ops as ops
 from .card_viewer import CardViewers
 from .model import DECK_SIZE, AppModel, format_instructions, format_preview
+from .open_in import OpenInTabButton
+from .presets import PresetBar, PresetStore
 from .sequence_panel import SequencePanel
 
 TEXT_DEBOUNCE_MS = 400
@@ -43,8 +45,11 @@ def write_file(parent, title, path, write):
 
 
 class SolverTab:
-    def __init__(self, parent, model=None):
+    def __init__(self, parent, model=None, presets=None, open_in=None):
+        """``open_in(target, cards)``, if given, adds "Open in new tab" buttons."""
         self.model = model or AppModel()
+        self.presets = presets or PresetStore()
+        self.open_in = open_in
         self._text_job = None
         self._syncing_text = False
         self._text_is_source = False
@@ -72,14 +77,12 @@ class SolverTab:
     def _build_final_panel(self, parent):
         frame = tb.LabelFrame(parent, text="1. Final deck (desired order, top first)", padding=6)
 
-        top = tb.Frame(frame)
-        top.pack(fill=tk.X)
-        tb.Label(top, text="Preset:").pack(side=tk.LEFT)
-        self.preset_var = tk.StringVar(value=next(iter(deck.PRESETS)))
-        tb.Combobox(top, textvariable=self.preset_var, values=list(deck.PRESETS),
-                    state="readonly", width=20).pack(side=tk.LEFT, padx=4)
-        tb.Button(top, text="Load", command=self.load_preset).pack(side=tk.LEFT)
-        tb.Button(top, text="Clear", command=self.model.clear_final).pack(side=tk.RIGHT)
+        self.preset_bar = PresetBar(frame, self.presets, self._preset_cards,
+                                    self.model.set_final_cards)
+        self.preset_bar.frame.pack(fill=tk.X)
+        self.preset_var = self.preset_bar.var
+        tb.Button(self.preset_bar.frame, text="Clear", command=self.model.clear_final).pack(
+            side=tk.RIGHT)
 
         label_row = tb.Frame(frame)
         label_row.pack(fill=tk.X, pady=(6, 0))
@@ -90,6 +93,9 @@ class SolverTab:
         self.final_text = tb.Text(frame, height=4, width=44, wrap=tk.WORD, font=MONO, undo=True)
         self.final_text.pack(fill=tk.X)
         self.final_text.bind("<<Modified>>", self._on_text_modified)
+        if self.open_in is not None:
+            self.open_final = OpenInTabButton(frame, self._preset_cards, self.open_in)
+            self.open_final.button.pack(anchor=tk.E, pady=(4, 0))
         self.text_error = tb.Label(frame, text="", bootstyle="danger", wraplength=420)
         self.text_error.pack(anchor=tk.W)
 
@@ -137,6 +143,9 @@ class SolverTab:
                   command=lambda: self._copy(self._start_numbered())).pack(side=tk.LEFT, padx=4)
         tb.Button(btns, text="Export…", command=self.export_start).pack(side=tk.LEFT)
         tb.Button(btns, text="View cards", command=self.view_start_cards).pack(side=tk.RIGHT)
+        if self.open_in is not None:
+            self.open_start = OpenInTabButton(frame, self._verified_start, self.open_in)
+            self.open_start.button.pack(anchor=tk.E, pady=(4, 0))
 
         self.preview_var = tk.BooleanVar(value=False)
         tb.Checkbutton(frame, text="Show step-by-step preview", variable=self.preview_var,
@@ -159,7 +168,14 @@ class SolverTab:
     # --- final deck events -------------------------------------------------------------
 
     def load_preset(self):
-        self.model.load_preset(self.preset_var.get())
+        self.preset_bar.load()
+
+    def _preset_cards(self):
+        """The final deck as typed, to save as a preset (empty slots are skipped)."""
+        self.apply_text()
+        if self.model.input_error:
+            raise ValueError(f"fix the shorthand first ({self.model.input_error})")
+        return self.model.filled_cards()
 
     def _on_text_modified(self, _event):
         if not self.final_text.edit_modified():
@@ -288,6 +304,13 @@ class SolverTab:
         return res.start if res.has_answer else []
 
     # --- output -------------------------------------------------------------------------------
+
+    def _verified_start(self):
+        """The starting order, to open in another tab."""
+        res = self.model.result
+        if not (res.has_answer and res.verified):
+            raise ValueError("there is no verified starting order yet")
+        return res.start
 
     def _start_shorthand(self):
         res = self.model.result

@@ -21,6 +21,8 @@ from .. import deck, tracking
 from . import theme
 from .card_viewer import CardViewers
 from .model import TrackerModel, format_table
+from .open_in import OpenInTabButton
+from .presets import PresetBar, PresetStore
 from .sequence_panel import SequencePanel
 
 TEXT_DEBOUNCE_MS = 400
@@ -29,8 +31,12 @@ PLACE_WHERE = {"on top of": True, "under": False}
 
 
 class TrackerTab:
-    def __init__(self, parent, model=None):
+    def __init__(self, parent, model=None, presets=None, open_in=None):
+        """``open_in(target, cards)``, if given, adds "Open in new tab" buttons."""
         self.model = model or TrackerModel()
+        self.presets = presets or PresetStore()
+        self.open_in = open_in
+        self.open_buttons = {}  # "deck", "before", "after" -> OpenInTabButton
         self._text_job = None
         self._syncing = False
         self._text_is_source = False
@@ -96,15 +102,12 @@ class TrackerTab:
         frame = tb.LabelFrame(parent, text="Deck to track (top first)", padding=6)
         frame.pack(fill=tk.X)
 
-        top = tb.Frame(frame)
-        top.pack(fill=tk.X)
-        tb.Label(top, text="Preset:").pack(side=tk.LEFT)
-        self.preset_var = tk.StringVar(value=next(iter(deck.PRESETS)))
-        tb.Combobox(top, textvariable=self.preset_var, values=list(deck.PRESETS),
-                    state="readonly", width=20).pack(side=tk.LEFT, padx=4)
-        tb.Button(top, text="Load", command=self.load_preset).pack(side=tk.LEFT)
-        tb.Button(top, text="Clear", command=lambda: self.model.set_cards([])).pack(
-            side=tk.RIGHT)
+        self.preset_bar = PresetBar(frame, self.presets, self._preset_cards,
+                                    self.model.set_cards)
+        self.preset_bar.frame.pack(fill=tk.X)
+        self.preset_var = self.preset_bar.var
+        tb.Button(self.preset_bar.frame, text="Clear",
+                  command=lambda: self.model.set_cards([])).pack(side=tk.RIGHT)
 
         tb.Label(frame, text="Shorthand, any number of cards (e.g.  A-KH, A-KC, K-AD, K-AS;\n"
                            "X = any card, X12 = twelve of them):"
@@ -112,6 +115,9 @@ class TrackerTab:
         self.deck_text = tb.Text(frame, height=3, width=44, wrap=tk.WORD, font=MONO, undo=True)
         self.deck_text.pack(fill=tk.X)
         self.deck_text.bind("<<Modified>>", self._on_text_modified)
+        if self.open_in is not None:
+            self.open_buttons["deck"] = OpenInTabButton(frame, self._preset_cards, self.open_in)
+            self.open_buttons["deck"].button.pack(anchor=tk.E, pady=(4, 0))
         self.text_error = tb.Label(frame, text="", bootstyle="danger", wraplength=380)
         self.text_error.pack(anchor=tk.W)
         self.deck_status = tb.Label(frame, text="", wraplength=380, justify=tk.LEFT)
@@ -128,6 +134,10 @@ class TrackerTab:
                   command=lambda: self._copy(self.shorthand(side))).pack(side=tk.LEFT)
         tb.Button(btns, text="View cards",
                   command=lambda: self.view_cards(side)).pack(side=tk.RIGHT)
+        if self.open_in is not None:
+            self.open_buttons[side] = OpenInTabButton(
+                btns, lambda: self._shown_cards(side), self.open_in, text="Open in…")
+            self.open_buttons[side].button.pack(side=tk.RIGHT, padx=(0, 4))
         text = tb.Text(frame, height=8, width=40, font=MONO, wrap=tk.NONE, state=tk.DISABLED)
         sb = tb.Scrollbar(frame, orient=tk.VERTICAL, command=text.yview)
         text.config(yscrollcommand=sb.set)
@@ -221,7 +231,14 @@ class TrackerTab:
     # --- deck events ----------------------------------------------------------------------
 
     def load_preset(self):
-        self.model.load_preset(self.preset_var.get())
+        self.preset_bar.load()
+
+    def _preset_cards(self):
+        """The deck as typed, to save as a preset."""
+        self.apply_text()
+        if self.model.error:
+            raise ValueError(f"fix the shorthand first ({self.model.error})")
+        return self.model.cards
 
     def _on_text_modified(self, _event):
         if not self.deck_text.edit_modified():
@@ -368,6 +385,17 @@ class TrackerTab:
             return []
         return [(f"Pile {p.name} — {len(p)} card{'s' if len(p) != 1 else ''}",
                  list(p.cards)) for p in table.piles]
+
+    def _shown_cards(self, side):
+        """The side's cards, to open in another tab (which takes one pile only)."""
+        if self._text_job is not None:  # use what was just typed
+            self.apply_text()
+        table = self._shown[side]
+        if table is None or not table.piles:
+            raise ValueError("there are no cards to open")
+        if len(table.piles) > 1:
+            raise ValueError("the cards are in several piles; gather them into one first")
+        return list(table.piles[0].cards)
 
     def shorthand(self, side):
         """The side's cards as shorthand; several piles as ``A: ... | B: ...``."""

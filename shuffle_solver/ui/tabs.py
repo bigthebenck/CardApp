@@ -9,7 +9,8 @@ shows one large "New tab" button instead.
 
 Mouse: click a tab to show it, drag it sideways to move it, double-click its
 title to rename it, click its × (or middle-click the tab) to close it, and
-right-click it for a menu of all of these. When the tabs don't fit, the strip
+right-click it for a menu of all of these (and, if the owner can copy tabs,
+"Duplicate"). When the tabs don't fit, the strip
 scrolls: with the mouse wheel over it, with the ‹ › arrows that appear at its
 ends, or by dragging a tab past an end. The tab on show is kept in view.
 """
@@ -41,14 +42,16 @@ class Tab:
 
 
 class TabManager:
-    def __init__(self, parent, kinds, on_change=None):
+    def __init__(self, parent, kinds, on_change=None, on_duplicate=None):
         """``kinds``: {kind: TabKind}, in the order the "New tab" menu lists them.
 
         ``on_change()``, if given, runs after tabs are added, closed, renamed,
-        moved or selected.
+        moved or selected. ``on_duplicate(tab)``, if given, adds "Duplicate" to
+        a tab's right-click menu; it is the owner's job to open the copy.
         """
         self.kinds = dict(kinds)
         self.on_change = on_change
+        self.on_duplicate = on_duplicate
         self.tabs = []
         self.current = None
         self._recent = []  # tabs, the most recently shown last
@@ -116,7 +119,7 @@ class TabManager:
         """Open a new tab of ``kind`` after the last one; returns its ``Tab``."""
         spec = self.kinds[kind]
         content = spec.create(self.body)
-        tab = Tab(kind, title or self._unused_title(spec.title), content)
+        tab = Tab(kind, title or self.unused_title(spec.title), content)
         self._build_header(tab)
         self.tabs.append(tab)
         self._pack_headers()
@@ -126,7 +129,7 @@ class TabManager:
             self._changed()
         return tab
 
-    def _unused_title(self, base):
+    def unused_title(self, base):
         """``base``, or ``base 2``, ``base 3``, ... if another tab already has it."""
         used = {t.title for t in self.tabs}
         n = 1
@@ -377,6 +380,8 @@ class TabManager:
         m.delete(0, tk.END)
         i = self.tabs.index(tab)
         m.add_command(label="Rename…", command=lambda: self.start_rename(tab))
+        if self.on_duplicate is not None:
+            m.add_command(label="Duplicate", command=lambda: self.on_duplicate(tab))
         m.add_command(label="Move left", command=lambda: self.move(tab, i - 1),
                       state=tk.NORMAL if i > 0 else tk.DISABLED)
         m.add_command(label="Move right", command=lambda: self.move(tab, i + 1),
