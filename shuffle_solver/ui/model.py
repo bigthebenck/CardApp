@@ -327,7 +327,8 @@ class XToYModel:
     ``solve()``, or ``search()`` on a worker thread; any edit to either order
     clears the old answer. Either order may hold indifferent (X) cards: an X
     in the ending order takes any card, and an X in the starting order is
-    filled in with whatever card the ending order needs where it lands.
+    filled in with whatever card the ending order needs where it lands. B and
+    L do the same for high and low cards only.
     """
 
     SIDES = ("start", "end")
@@ -451,14 +452,15 @@ def fill_indifferent(start, end, steps):
 def _route_states(start, end, steps):
     """(states from the filled-in start, whether every card named in ``end`` arrives)."""
     states = solver.intermediate_states(fill_indifferent(start, end, steps), steps)
-    verified = all(e.indifferent or c.key == e.key for c, e in zip(states[-1], end))
+    verified = all(deck.can_match(c, e) for c, e in zip(states[-1], end))
     return states, verified
 
 
 def _filled_note(start, states):
     """A note when the route turned X cards of the starting order into named cards."""
     if any(x.indifferent and not c.indifferent for x, c in zip(start, states[0])):
-        return ["The starting order's X cards are filled in with the cards they must be."]
+        return ["The starting order's indifferent cards are filled in with the cards they "
+                "must be."]
     return []
 
 
@@ -502,8 +504,9 @@ def search_outcome(start, end, depth, cancel=None, progress=None, improved=None)
     elif found.shortest:
         msg = f"Verified. {_shuffles(n)}, the fewest possible."
     elif found.paired and n <= depth:
-        msg = (f"Verified. {_shuffles(n)}. Both orders have X cards where the other names "
-               "cards, so they were paired up one fixed way; another pairing may be shorter.")
+        msg = (f"Verified. {_shuffles(n)}. Both orders have indifferent cards (X, B, L) or "
+               "cards the other doesn't name, so they were paired up one fixed way; another "
+               "pairing may be shorter.")
     else:
         msg = (f"Verified. {n} shuffles. No sequence of {depth} or fewer exists; this "
                "is the shortest route found, not necessarily the shortest possible.")
@@ -583,12 +586,14 @@ class TrackerModel(StepList):
         """Why the deck can't be tracked (empty list when it can).
 
         Any number of cards will do, since steps can add and remove them, but
-        each card only once (indifferent cards, X, as many as you like).
+        each card only once (indifferent cards, X, as many as you like, and B or
+        L as many as there are high or low cards left).
         """
         if not self.cards:
             return ["No cards yet."]
-        dups = deck.validate_deck(self.cards).duplicates
-        return ["Duplicated: " + ", ".join(dups)] if dups else []
+        report = deck.validate_deck(self.cards)
+        problems = ["Duplicated: " + ", ".join(report.duplicates)] if report.duplicates else []
+        return problems + [m for m in report.messages() if "indifferent" in m]
 
     # --- steps -------------------------------------------------------------------------
 
@@ -990,7 +995,7 @@ class TrainerModel:
         if not self.cards:
             return ["No cards yet."]
         if any(c.indifferent for c in self.cards):  # e.g. from a saved preset
-            return ["Indifferent cards (X) can't be trained; name every card."]
+            return ["Indifferent cards (X, B, L) can't be trained; name every card."]
         dups = deck.validate_deck(self.cards).duplicates
         return ["Duplicated: " + ", ".join(dups)] if dups else []
 

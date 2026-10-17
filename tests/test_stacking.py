@@ -61,6 +61,22 @@ def test_fill_uses_every_card_once():
     assert keys(stack[:3]) == ["AH", "2H", "3H"]  # the spare cards, in new deck order
 
 
+def test_high_and_low_spots_stay_and_fill_by_band():
+    wanted = {"Player 1": cards("B, L, AS"), "Player 2": cards("L, B")}
+    stack = build_stack(FIVE_CARD, 2, wanted)
+    assert keys(stack[:6]) == ["B", "L", "L", "B", "AS", "X"]
+    filled = build_stack(FIVE_CARD, 2, wanted, fill=True)
+    assert deck.validate_deck(filled).ok and not any(c.indifferent for c in filled)
+    assert all(deck.can_match(want, got) for want, got in zip(stack, filled))
+    assert keys(filled[:4]) == ["AH", "2H", "3H", "9H"]  # high and low in new deck order
+
+
+def test_fill_runs_out_of_high_cards():
+    wanted = {f"Player {n}": cards("B5") for n in range(1, 6)}  # 25 B, only 24 high cards
+    with pytest.raises(ValueError, match=r"25 high cards wanted \(B\), but only 24"):
+        build_stack(FIVE_CARD, 5, wanted, fill=True)
+
+
 def test_face_up_flag_is_dropped():
     stack = build_stack(FIVE_CARD, 2, {"Player 1": cards("AS`")})
     assert not stack[0].face_up

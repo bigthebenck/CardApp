@@ -207,7 +207,7 @@ def test_name_cards_turns_x_cards_into_real_ones():
     after = step.apply(table)
     assert [str(c) for c in after.pile("A").cards] == ["AC", "X", "5S", "6S`", "2C"]
     assert after.indifferent_count() == 1
-    with pytest.raises(ValueError, match=r"not an X card at position 1 \(A♣\)"):
+    with pytest.raises(ValueError, match=r"not an indifferent card at position 1 \(A♣\)"):
         NameCards(cards("5S"), "A", 1).apply(table)
     with pytest.raises(ValueError, match="already in play: 2♣"):
         NameCards(cards("2C"), "A", 2).apply(table)
@@ -230,6 +230,31 @@ def test_naming_x_cards_reaches_back_to_where_they_appeared():
     # An X added partway through is named only from where it was added.
     tables, error = replay(start, steps[:2] + [NameCards((ks,), "A", 1)])
     assert error is None and tables[0].keys() == {"AC", "2C"} and "KS" in tables[2].keys()
+
+
+def test_naming_high_and_low_cards_keeps_their_band():
+    table = Table.start(deck.parse_cards("AC, B, L`", allow_indifferent=True))
+    after = NameCards(cards("KS 5D"), "A", 2).apply(table)
+    assert [str(c) for c in after.pile("A").cards] == ["AC", "KS", "5D`"]
+    with pytest.raises(ValueError, match=r"position 2 is B \(any high card\), but 5♦ is low"):
+        NameCards(cards("5D"), "A", 2).apply(table)
+    with pytest.raises(ValueError, match=r"position 3 is L .* but K♠ is high"):
+        NameCards(cards("KS"), "A", 3).apply(table)
+
+
+def test_replay_keeps_high_and_low_cards():
+    start = deck.parse_cards("B, L, AC, 2C", allow_indifferent=True)
+    tables, error = replay(start, [Shuffle(Step(ops.OUT_FARO))])
+    assert error is None
+    assert [c.rank for c in tables[1].pile("A").cards] == ["B", "A", "L", "2"]
+
+
+def test_rearrange_counts_each_kind_of_indifferent_card():
+    table = Table.start(deck.parse_cards("AC, B, L", allow_indifferent=True))
+    Rearrange("", parse_piles("L, AC, B")).apply(table)
+    with pytest.raises(ValueError, match=r"2 indifferent high cards \(B\) where the table "
+                                         r"has 1; 0 indifferent low cards \(L\)"):
+        Rearrange("", parse_piles("B, AC, B")).apply(table)
 
 
 def test_naming_back_clashes_with_a_card_used_earlier():

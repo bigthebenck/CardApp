@@ -1006,7 +1006,7 @@ def test_tracker_names_x_cards(app):
     tab.model.set_from_text("AC, X3")
     tab.cards_var.set("KS")
     tab.name_pos_var.set("1")
-    assert tab.name_cards() is False and "not an X card" in tab.sequence.seq_error.cget("text")
+    assert tab.name_cards() is False and "not an indifferent card" in tab.sequence.seq_error.cget("text")
     tab.name_pos_var.set("3")
     assert tab.name_cards()
     assert [str(c) for c in tab.model.states[-1].pile("A").cards] == ["AC", "X", "KS", "X"]

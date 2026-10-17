@@ -30,7 +30,9 @@ round, as bytes giving each card's position, so a shuffle is one
 
 Indifferent cards (X) may appear on either side. An X in the target means any
 card will do there; an X in the start stands for whichever card the target
-needs where it lands. Only the cards that must finish somewhere particular
+needs where it lands. B and L work the same way for high cards (A, 9-K) and
+low cards (2-8) only: a B must never land where the target wants a low card,
+nor an L where it wants a high one. Only the cards that must finish somewhere particular
 are tracked, so a search state is just their positions: fewer tracked cards
 make a smaller, faster search, and the route found is shortest for them.
 """
@@ -40,6 +42,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from . import deck
 from . import shuffle_ops as ops
 from .solver import Step, simulate
 
@@ -104,34 +107,67 @@ class Tracked:
 
 
 def tracked_cards(start, target):
-    """Which cards must finish where, allowing indifferent (X) cards on both sides.
+    """Which cards must finish where, allowing indifferent cards on both sides.
 
-    A card named in both orders must move to its place in the target. A card
-    the target names but the start doesn't comes from one of the start's X
-    cards; a card the start names but the target doesn't goes to one of the
-    target's X spots. While only one of those two kinds occurs, the leftover
-    cards fall into the right spots by themselves and need no tracking. When
-    both occur, the smaller kind is paired up with X cards in order, which is
-    one choice of many, so the result is marked ``paired``.
+    A card named in both orders must move to its place in the target. Every
+    other card of the start (named only there, or indifferent) must land on a
+    spot of the target it can be (``deck.can_match``): an X fits anywhere, a B
+    only with a high card and an L only with a low one. Leftovers on either
+    side that are X are free; the rest are constrained. While only one side
+    has constrained leftovers, every card falls into a right spot by itself
+    and needs no tracking. When both sides do, the smaller side is paired up
+    with one fitting choice of partners, which is one choice of many, so the
+    result is marked ``paired``.
     """
     src, dst = _named(start), _named(target)
-    x_src = [i for i, c in enumerate(start) if c.indifferent]
-    x_dst = [j for j, c in enumerate(target) if c.indifferent]
-    needed = sorted(j for k, j in dst.items() if k not in src)  # filled from start X cards
-    spare = sorted(i for k, i in src.items() if k not in dst)  # go to target X spots
-    if (len(start) != len(target) or len(src) + len(x_src) != len(start)
-            or len(dst) + len(x_dst) != len(target)
-            or len(needed) > len(x_src) or len(spare) > len(x_dst)):
-        raise ValueError("the two orders must contain the same cards (X stands for any card)")
+    sources = [i for i, c in enumerate(start) if c.indifferent or c.key not in dst]
+    spots = [j for j, c in enumerate(target) if c.indifferent or c.key not in src]
+    match = None
+    if (len(start) == len(target)
+            and len(src) + sum(c.indifferent for c in start) == len(start)
+            and len(dst) + sum(c.indifferent for c in target) == len(target)):
+        match = _match(sources, spots, lambda i, j: deck.can_match(start[i], target[j]))
+    if match is None:
+        raise ValueError("the two orders must contain the same cards (X stands for any card, "
+                         "B for any high card, L for any low card)")
     pairs = [(dst[k], i, k) for k, i in src.items() if k in dst]  # (goal, source, key)
-    paired = bool(needed and spare)
-    if paired and len(needed) <= len(spare):
-        pairs += [(j, i, None) for j, i in zip(needed, x_src)]
+    bound_src = [i for i in sources if start[i].category is not None]
+    bound_dst = [j for j in spots if target[j].category is not None]
+    paired = bool(bound_src and bound_dst)
+
+    def key(i):  # None for an indifferent card picked to become some card
+        return None if start[i].indifferent else start[i].key
+
+    if paired and len(bound_dst) <= len(bound_src):
+        back = {j: i for i, j in match.items()}
+        pairs += [(j, back[j], key(back[j])) for j in bound_dst]
     elif paired:
-        pairs += [(j, i, start[i].key) for j, i in zip(x_dst, spare)]
+        pairs += [(match[i], i, key(i)) for i in bound_src]
     pairs.sort(key=lambda p: p[0])
     return Tracked([i for _j, i, _k in pairs], [j for j, _i, _k in pairs],
                    [k for _j, _i, k in pairs], paired)
+
+
+def _match(sources, spots, fits):
+    """source -> spot for every source, each spot used once and ``fits(source, spot)``;
+    None when there's no such matching (augmenting paths, in list order)."""
+    if len(sources) != len(spots):
+        return None
+    owner = {}  # spot -> source
+
+    def place(i, seen):
+        for j in spots:
+            if j not in seen and fits(i, j):
+                seen.add(j)
+                if j not in owner or place(owner[j], seen):
+                    owner[j] = i
+                    return True
+        return False
+
+    for i in sources:
+        if not place(i, set()):
+            return None
+    return {i: j for j, i in owner.items()}
 
 
 def _named(cards):

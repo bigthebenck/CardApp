@@ -387,7 +387,8 @@ class XToYTab:
             if report.ok:
                 x = report.indifferent
                 text = ("✓ Full 52-card deck, no duplicates." if not x else
-                        f"✓ 52 cards, no duplicates; {x} indifferent (X).")
+                        f"✓ 52 cards, no duplicates; {x} indifferent "
+                        f"({report.counts_text()}).")
                 self.statuses[side].config(text=text, bootstyle="success")
             else:
                 self.statuses[side].config(text="\n".join(report.messages()),

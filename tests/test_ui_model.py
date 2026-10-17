@@ -290,6 +290,18 @@ def test_x_to_y_pairs_x_cards_when_both_sides_need_them():
     assert "paired up" in out.messages[0] and m.cards["start"][0].key == "AD"
 
 
+def test_x_to_y_fills_high_and_low_start_cards():
+    m = XToYModel()
+    # KS and AH are missing (high), 2H too (low): a B must become the king
+    m.set_from_text("start", "B, A-QS, L, B, 3-KH, A-KC, A-KD")
+    m.set_from_text("end", "A-KS, X39")
+    out = m.solve()
+    assert out.status == "ok" and out.verified
+    assert [c.key for c in out.states[-1][:13]] == [c.key for c in deck.parse_cards("A-KS")]
+    assert "KS" in (m.cards["start"][0].key, m.cards["start"][14].key)
+    assert m.cards["start"][13].rank == "L"
+
+
 def test_x_to_y_shorthand_error_and_swap():
     m = XToYModel()
     assert m.set_from_text("start", "A-KC, ZZ") is not None

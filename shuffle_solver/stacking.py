@@ -70,9 +70,10 @@ def build_stack(game, players, wanted, burns=True, fill=False):
     """The 52-card starting order that deals ``wanted`` (hand name -> cards).
 
     A hand may list fewer cards than it holds, and X stands for a card that
-    doesn't matter; both leave an indifferent card in that spot. Every other
-    position is indifferent too, unless ``fill`` puts the unused cards there
-    in new deck order. Raises ValueError for an unknown hand, a hand with too
+    doesn't matter (B any high card, L any low one); both leave an indifferent
+    card in that spot. Every other position is indifferent too, unless ``fill``
+    puts the unused cards there in new deck order, high ones on B and low ones
+    on L. Raises ValueError for an unknown hand, a hand with too
     many cards, or a card wanted twice.
     """
     sizes = dict(hands(game, players))
@@ -99,9 +100,26 @@ def build_stack(game, players, wanted, burns=True, fill=False):
         if spot.index < len(cards):
             stack[i] = cards[spot.index].with_face_up(False)
     if fill:
-        spare = iter(c for c in deck.PRESETS["New deck order"]
-                     if c.key not in {s.key for s in stack})
-        stack = [next(spare) if c.indifferent else c for c in stack]
+        stack = _filled(stack)
+    return stack
+
+
+def _filled(stack):
+    """``stack`` with its indifferent cards replaced by the unused cards, in new
+    deck order: B spots by high cards and L spots by low ones first, then X spots."""
+    used = {c.key for c in stack}
+    spare = [c for c in deck.PRESETS["New deck order"] if c.key not in used]
+    stack = list(stack)
+    for letter in (deck.HIGH_INDIFFERENT, deck.LOW_INDIFFERENT, deck.INDIFFERENT):
+        spots = [i for i, c in enumerate(stack) if c.rank == letter]
+        fits = [c for c in spare if deck.can_match(stack[spots[0]], c)] if spots else []
+        if len(fits) < len(spots):
+            kind = deck.HIGH if letter == deck.HIGH_INDIFFERENT else deck.LOW
+            raise ValueError(f"{len(spots)} {kind} cards wanted ({letter}), but only "
+                             f"{len(fits)} {kind} cards are left")
+        for i, c in zip(spots, fits):
+            stack[i] = c
+            spare.remove(c)
     return stack
 
 

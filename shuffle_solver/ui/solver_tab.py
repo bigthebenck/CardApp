@@ -23,7 +23,8 @@ GRID_ROWS = 13
 MONO = ("Courier", 10)
 
 ALL_CARD_LABELS = [deck.Card(r, s).pretty() for s in deck.SUITS for r in deck.RANKS]
-INDIFFERENT_LABEL = deck.indifferent_card().pretty()
+INDIFFERENT_LABELS = [deck.indifferent_card(rank=r).pretty()
+                      for r in deck.INDIFFERENT_RANKS]
 
 BADGES = {  # status -> (text, bootstyle)
     "ok": ("PASS", "success"),
@@ -199,9 +200,9 @@ class SolverTab:
             self._text_is_source = False
 
     def _fill_slot_choices(self, index):
-        # Offer only cards not already placed in another slot; X can go anywhere.
+        # Offer only cards not already placed in another slot; X, B, L can go anywhere.
         used = {c.key for i, c in enumerate(self.model.slots) if c is not None and i != index}
-        self.slot_boxes[index]["values"] = [INDIFFERENT_LABEL] + [
+        self.slot_boxes[index]["values"] = INDIFFERENT_LABELS + [
             lbl for lbl, key in zip(ALL_CARD_LABELS, deck.FULL_DECK_KEYS) if key not in used
         ]
 
@@ -249,7 +250,7 @@ class SolverTab:
         if report.ok:
             x = report.indifferent
             text = ("✓ Full 52-card deck, no duplicates." if not x else
-                    f"✓ 52 cards, no duplicates; {x} indifferent (X).")
+                    f"✓ 52 cards, no duplicates; {x} indifferent ({report.counts_text()}).")
             self.deck_status.config(text=text, bootstyle="success")
         else:
             self.deck_status.config(text="\n".join(report.messages()), bootstyle="danger")

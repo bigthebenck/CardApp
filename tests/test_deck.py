@@ -4,6 +4,9 @@ from hypothesis import strategies as st
 
 from shuffle_solver.deck import (
     FULL_DECK_KEYS,
+    HIGH,
+    INDIFFERENT_RANKS,
+    LOW,
     PRESETS,
     RANKS,
     SUITS,
@@ -11,6 +14,7 @@ from shuffle_solver.deck import (
     ParseError,
     expand_ranks,
     format_cards,
+    can_match,
     format_numbered,
     indifferent_card,
     parse_cards,
@@ -207,6 +211,64 @@ def test_format_indifferent_runs():
     assert format_cards(cards, compress=False) == "X, AC, X, X, X`, X`, 2C"
 
 
+B, L = indifferent_card(rank="B"), indifferent_card(rank="L")
+
+
+def test_high_and_low_indifferent_cards():
+    assert parse_cards("b, L3`, X2, B12", allow_indifferent=True) == (
+        [B] + [indifferent_card(True, "L")] * 3 + [X] * 2 + [B] * 12)
+    assert str(B) == B.pretty() == "B" and B.name() == "any high card"
+    assert indifferent_card(True, "L").name() == "any low card (face up)"
+    assert B.indifferent and L.indifferent
+    assert format_cards(parse_cards("B, B, L, X, X", allow_indifferent=True)) == "B2, L, X2"
+
+
+def test_card_categories():
+    assert [Card(r, "C").category for r in RANKS] == [
+        HIGH, LOW, LOW, LOW, LOW, LOW, LOW, LOW, HIGH, HIGH, HIGH, HIGH, HIGH]
+    assert (B.category, L.category, X.category) == (HIGH, LOW, None)
+
+
+@pytest.mark.parametrize("a, b, ok", [
+    ("B", "KH", True), ("B", "AS", True), ("B", "9D", True), ("B", "8D", False),
+    ("L", "2C", True), ("L", "8C", True), ("L", "TC", False),
+    ("B", "B", True), ("B", "L", False), ("X", "B", True), ("X", "L", True), ("X", "5C", True),
+    ("AC", "AC", True), ("AC", "AH", False),
+])
+def test_can_match(a, b, ok):
+    ca, cb = (parse_cards(t, allow_indifferent=True)[0] for t in (a, b))
+    assert can_match(ca, cb) is ok and can_match(cb, ca) is ok
+
+
+@pytest.mark.parametrize("text", ["B", "AC, L3"])
+def test_high_low_rejected_unless_allowed(text):
+    with pytest.raises(ParseError, match="indifferent"):
+        parse_cards(text)
+
+
+@pytest.mark.parametrize("text", ["B0", "L1000", "(B, AC)", "BC"])
+def test_high_low_parse_errors(text):
+    with pytest.raises(ParseError):
+        parse_cards(text, allow_indifferent=True)
+
+
+def test_deck_with_high_and_low_indifferent_cards():
+    # every ace and king is left out (8 high cards); every 2 (4 low cards)
+    named = [c for c in PRESETS["New deck order"] if c.rank not in "AK2"]
+    report = validate_deck(named + [B] * 8 + [L] * 4)
+    assert report.ok and (report.indifferent, report.high, report.low) == (12, 8, 4)
+    assert report.counts_text() == "8 B, 4 L"
+    report = validate_deck(named + [B] * 6 + [X] * 2 + [L] * 4)
+    assert report.ok and report.counts_text() == "2 X, 6 B, 4 L"
+
+
+def test_too_many_high_indifferent_cards():
+    named = [c for c in PRESETS["New deck order"] if c.rank not in "A2"]
+    report = validate_deck(named + [B] * 5 + [L] * 3)
+    assert not report.ok
+    assert report.messages() == ["5 high indifferent cards (B), but only 4 high cards are missing."]
+
+
 # --- errors --------------------------------------------------------------------
 
 @pytest.mark.parametrize(
@@ -290,7 +352,8 @@ def test_format_numbered():
 
 
 card_strategy = st.builds(Card, st.sampled_from(RANKS), st.sampled_from(SUITS), st.booleans())
-card_or_x = st.one_of(card_strategy, st.builds(indifferent_card, st.booleans()))
+card_or_x = st.one_of(card_strategy, st.builds(indifferent_card, st.booleans(),
+                                               st.sampled_from(INDIFFERENT_RANKS)))
 
 
 @settings(max_examples=300)

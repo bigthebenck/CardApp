@@ -110,7 +110,7 @@ class TrackerTab:
                   command=lambda: self.model.set_cards([])).pack(side=tk.RIGHT)
 
         tb.Label(frame, text="Shorthand, any number of cards (e.g.  A-KH, A-KC, K-AD, K-AS;\n"
-                           "X = any card, X12 = twelve of them):"
+                           "X = any card, X12 = twelve of them, B = any high, L = any low):"
                  ).pack(anchor=tk.W, pady=(6, 0))
         self.deck_text = tb.Text(frame, height=3, width=44, wrap=tk.WORD, font=MONO, undo=True)
         self.deck_text.pack(fill=tk.X)

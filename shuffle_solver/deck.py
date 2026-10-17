@@ -14,12 +14,14 @@ Shorthand summary (whitespace ignored, case-insensitive):
     (ACHSD)`      whole chain of full cards face up
     X             an indifferent card: any card, it doesn't matter which
     X12           twelve indifferent cards in a row (X12` all face up)
+    B             an indifferent high card: any ace, 9, 10, J, Q or K (B12 etc.)
+    L             an indifferent low card: any 2 to 8 (L12 etc.)
 
 Entries are separated by commas (or newlines). Parentheses never nest. Inside
 a group every item is either a bare rank/range (the suit comes after the
 closing paren) or a full card chain (no suit after the paren) -- not a mix.
-Indifferent cards are only accepted when ``parse_cards`` is asked to allow
-them, and never inside parentheses.
+Indifferent cards (X, B, L) are only accepted when ``parse_cards`` is asked to
+allow them, and never inside parentheses.
 """
 
 from dataclasses import dataclass
@@ -31,6 +33,13 @@ SUIT_NAMES = {"C": "clubs", "H": "hearts", "S": "spades", "D": "diamonds"}
 RANK_NAMES = {"A": "ace", "T": "10", "J": "jack", "Q": "queen", "K": "king"}
 BACKTICKS = "`‵"  # plain backtick, plus the reversed prime some fonts render it as
 INDIFFERENT = "X"  # rank of an indifferent card, which has no suit
+HIGH_INDIFFERENT = "B"  # rank of an indifferent high card (A, 9-K)
+LOW_INDIFFERENT = "L"  # rank of an indifferent low card (2-8)
+INDIFFERENT_RANKS = INDIFFERENT + HIGH_INDIFFERENT + LOW_INDIFFERENT
+INDIFFERENT_NAMES = {INDIFFERENT: "any card", HIGH_INDIFFERENT: "any high card",
+                     LOW_INDIFFERENT: "any low card"}
+HIGH_RANKS = "A9TJQK"  # every other rank is low
+HIGH, LOW = "high", "low"
 MAX_INDIFFERENT_RUN = 999  # largest count accepted in "X12" shorthand
 
 _SYMBOL_TO_SUIT = {v: k for k, v in SUIT_SYMBOLS.items()}
@@ -44,7 +53,7 @@ class Card:
     face_up: bool = False
 
     def __post_init__(self):
-        if self.rank == INDIFFERENT:
+        if self.rank in INDIFFERENT_RANKS:
             if self.suit:
                 raise ValueError("an indifferent card has no suit")
             return
@@ -60,8 +69,18 @@ class Card:
 
     @property
     def indifferent(self):
-        """True for a stand-in for any card (all indifferent cards are equal)."""
-        return self.rank == INDIFFERENT
+        """True for a stand-in card: X (any card), B (any high one) or L (any low one).
+        Indifferent cards of the same kind are all equal."""
+        return self.rank in INDIFFERENT_RANKS
+
+    @property
+    def category(self):
+        """HIGH or LOW for a named card and for B / L; None for X, which can be either."""
+        if self.rank == INDIFFERENT:
+            return None
+        if self.indifferent:
+            return HIGH if self.rank == HIGH_INDIFFERENT else LOW
+        return HIGH if self.rank in HIGH_RANKS else LOW
 
     def with_face_up(self, face_up):
         return Card(self.rank, self.suit, face_up)
@@ -74,7 +93,7 @@ class Card:
 
     def name(self):
         if self.indifferent:
-            return "any card" + (" (face up)" if self.face_up else "")
+            return INDIFFERENT_NAMES[self.rank] + (" (face up)" if self.face_up else "")
         rank = RANK_NAMES.get(self.rank, self.rank)
         return f"{rank} of {SUIT_NAMES[self.suit]}" + (" (face up)" if self.face_up else "")
 
@@ -85,8 +104,20 @@ class Card:
 FULL_DECK_KEYS = [r + s for s in SUITS for r in RANKS]
 
 
-def indifferent_card(face_up=False):
-    return Card(INDIFFERENT, "", face_up)
+def indifferent_card(face_up=False, rank=INDIFFERENT):
+    """An X card, or with ``rank`` B or L an indifferent high or low card."""
+    return Card(rank, "", face_up)
+
+
+def can_match(a, b):
+    """Whether cards ``a`` and ``b`` can be the same card (face-up flags ignored).
+
+    Two named cards must be the same card. An indifferent card can be any card
+    of its category: X anything, B a high card (or B, or X), L a low one.
+    """
+    if not a.indifferent and not b.indifferent:
+        return a.key == b.key
+    return a.category is None or b.category is None or a.category == b.category
 
 
 # --- tokenizer ------------------------------------------------------------------
@@ -125,11 +156,11 @@ def _tokenize(text):
         elif ch == "1" and i + 1 < len(text) and text[i + 1] == "0":
             toks.append(_Tok(RANK, "T", i))
             i += 2
-        elif up == INDIFFERENT:
+        elif up in INDIFFERENT_RANKS:
             j = i + 1
             while j < len(text) and text[j] in "0123456789":  # the count in "X12"
                 j += 1
-            toks.append(_Tok(INDIFF, INDIFFERENT + text[i + 1:j], i))
+            toks.append(_Tok(INDIFF, up + text[i + 1:j], i))
             i = j
         elif up in RANKS:
             toks.append(_Tok(RANK, up, i))
@@ -224,14 +255,16 @@ class _Parser:
         raise ParseError(f"expected a card, range or '(' but found {self._found(self.tok)}", self.tok.pos)
 
     def indifferent(self):
-        """X, or X12 for twelve; a trailing backtick flags them all face up."""
+        """X, or X12 for twelve (likewise B and L); a trailing backtick flags them all face up."""
         tok = self.take(INDIFF)
+        letter = tok.value[0]
         if not self.allow_indifferent:
-            raise ParseError("indifferent cards (X) can't be used here", tok.pos)
+            raise ParseError("indifferent cards (X, B, L) can't be used here", tok.pos)
         count = int(tok.value[1:]) if len(tok.value) > 1 else 1
         if not 1 <= count <= MAX_INDIFFERENT_RUN:
-            raise ParseError(f"the count after X must be 1 to {MAX_INDIFFERENT_RUN}", tok.pos)
-        return [indifferent_card(self.accept(TICK) is not None)] * count
+            raise ParseError(f"the count after {letter} must be 1 to {MAX_INDIFFERENT_RUN}",
+                             tok.pos)
+        return [indifferent_card(self.accept(TICK) is not None, letter)] * count
 
     def rank_spec(self):
         first = self.take(RANK).value
@@ -317,7 +350,8 @@ def parse_cards(text, allow_indifferent=False):
 def format_cards(cards, compress=True):
     """Shorthand for a card list. With ``compress``, runs of three or more
     consecutive same-suit, same-facing ranks become ranges (e.g. ``A-KC``),
-    and runs of two or more same-facing indifferent cards become ``X<count>``.
+    and runs of two or more same-kind, same-facing indifferent cards become
+    ``X<count>`` (or ``B<count>``, ``L<count>``).
     ``parse_cards(format_cards(x), allow_indifferent=True) == x`` always holds."""
     parts = []
     i = 0
@@ -328,7 +362,7 @@ def format_cards(cards, compress=True):
             while compress and j < len(cards) and cards[j] == c:
                 j += 1
             count = j - i
-            parts.append(INDIFFERENT + (str(count) if count > 1 else "")
+            parts.append(c.rank + (str(count) if count > 1 else "")
                          + ("`" if c.face_up else ""))
             i = j
             continue
@@ -367,12 +401,29 @@ class DeckReport:
     count: int
     duplicates: list  # card keys appearing more than once, in first-seen order
     missing: list  # card keys absent, in new-deck (suit, rank) order
-    indifferent: int = 0  # indifferent cards, each standing in for a missing one
+    indifferent: int = 0  # indifferent cards (X, B, L), each standing in for a missing one
+    high: int = 0  # of those, the B cards, each standing in for a missing high card
+    low: int = 0  # ... and the L cards, for a missing low card
+
+    @property
+    def missing_high(self):
+        return sum(k[0] in HIGH_RANKS for k in self.missing)
+
+    @property
+    def missing_low(self):
+        return len(self.missing) - self.missing_high
 
     @property
     def ok(self):
         return (self.count == 52 and not self.duplicates
-                and len(self.missing) == self.indifferent)
+                and len(self.missing) == self.indifferent
+                and self.high <= self.missing_high and self.low <= self.missing_low)
+
+    def counts_text(self):
+        """The indifferent cards by kind, e.g. "2 X, 1 B"."""
+        kinds = [(self.indifferent - self.high - self.low, INDIFFERENT),
+                 (self.high, HIGH_INDIFFERENT), (self.low, LOW_INDIFFERENT)]
+        return ", ".join(f"{n} {letter}" for n, letter in kinds if n)
 
     def messages(self):
         out = []
@@ -382,22 +433,30 @@ class DeckReport:
             out.append("Duplicated: " + ", ".join(self.duplicates))
         if self.missing and not self.indifferent:  # else the X cards stand for them
             out.append("Missing: " + ", ".join(self.missing))
+        for n, have, letter, kind in ((self.high, self.missing_high, HIGH_INDIFFERENT, HIGH),
+                                      (self.low, self.missing_low, LOW_INDIFFERENT, LOW)):
+            if n > have:
+                out.append(f"{n} {kind} indifferent card{'s' if n != 1 else ''} ({letter}), "
+                           f"but only {have} {kind} card{'s are' if have != 1 else ' is'} "
+                           "missing.")
         return out
 
 
 def validate_deck(cards):
     """Count, duplicates and missing cards; indifferent cards are never duplicates."""
-    seen, dups, indifferent = set(), [], 0
+    seen, dups, indifferent, high, low = set(), [], 0, 0, 0
     for c in cards:
         if c.indifferent:
             indifferent += 1
+            high += c.rank == HIGH_INDIFFERENT
+            low += c.rank == LOW_INDIFFERENT
             continue
         if c.key in seen and c.key not in dups:
             dups.append(c.key)
         seen.add(c.key)
     missing = [k for k in FULL_DECK_KEYS if k not in seen]
     return DeckReport(count=len(cards), duplicates=dups, missing=missing,
-                      indifferent=indifferent)
+                      indifferent=indifferent, high=high, low=low)
 
 
 def parse_deck(text):

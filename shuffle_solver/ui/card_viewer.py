@@ -3,10 +3,11 @@
 Each shorthand field gets a "View cards" button; the popup it opens stays in
 sync with that field until it is closed. Images are the PNGs in
 ``card_images/`` (see the README there for their source). An indifferent
-card (X) is shown as a card back.
+card (X) is shown as a card back; a high (B) or low (L) one has its letter on it.
 """
 
 import tkinter as tk
+from collections import Counter
 from pathlib import Path
 
 import ttkbootstrap as tb
@@ -90,12 +91,14 @@ class CardViewer:
         c.delete("all")
         filled = sum(card is not None for card in every)
         face_up = sum(card is not None and card.face_up for card in every)
-        indifferent = sum(card is not None and card.indifferent for card in every)
+        kinds = Counter(card.rank for card in every if card is not None and card.indifferent)
         text = f"{filled} card{'s' if filled != 1 else ''}, top first"
         if len(groups) > 1:
             text += f", in {len(groups)} piles"
-        if indifferent:
-            text += f"  ·  {indifferent} indifferent (X, shown as a card back)"
+        if kinds:
+            split = ", ".join(f"{kinds[r]} {r}" for r in "XBL" if kinds[r])
+            text += (f"  ·  {sum(kinds.values())} indifferent ({split}, shown as a card back"
+                     + (" marked B or L" if kinds["B"] or kinds["L"] else "") + ")")
         if face_up:
             text += f"  ·  {face_up} face up (orange outline)"
         self.summary.config(text=text if every else "No cards to show.")
@@ -137,6 +140,12 @@ class CardViewer:
                 c.create_text(x + CARD_W / 2, top + CARD_H / 2, text="empty", fill=EMPTY_COLOR)
                 continue
             c.create_image(x, top, image=self._image(card), anchor=tk.NW)
+            if card.indifferent and card.category is not None:  # B or L on the back
+                c.create_oval(x + CARD_W / 2 - 22, top + CARD_H / 2 - 22,
+                              x + CARD_W / 2 + 22, top + CARD_H / 2 + 22,
+                              fill="white", outline="black", width=2)
+                c.create_text(x + CARD_W / 2, top + CARD_H / 2, text=card.rank, fill="black",
+                              font=("TkDefaultFont", 24, "bold"))
             if card.face_up:
                 c.create_rectangle(x - 2, top - 2, x + CARD_W + 2, top + CARD_H + 2,
                                    outline=FACE_UP_COLOR, width=3)

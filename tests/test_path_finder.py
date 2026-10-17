@@ -161,6 +161,52 @@ def test_indifferent_cards_must_cover_the_differences():
         path_finder.tracked_cards(NDO[:-1] + [NDO[0]], [x] * 52)  # duplicate in the start
 
 
+B, L = deck.indifferent_card(rank="B"), deck.indifferent_card(rank="L")
+
+
+def fits(got, want):
+    return all(deck.can_match(g, w) for g, w in zip(got, want))
+
+
+def test_high_start_card_stands_for_a_needed_high_card():
+    # the B on top becomes the ace of clubs it is needed as
+    assert path_finder.find_path([B] + NDO[1:], NDO).steps == []
+    with pytest.raises(ValueError, match="same cards"):
+        path_finder.tracked_cards([L] + NDO[1:], NDO)  # an L can't be the ace
+
+
+def test_high_and_low_target_spots_take_only_their_band():
+    end = simulate(NDO, [OUT, Step(ops.CUT, 10)])
+    loose = [B if c.category == deck.HIGH else L for c in end]
+    tracked = path_finder.tracked_cards(NDO, loose)
+    assert tracked.paired  # which high card goes to which B spot was picked
+    result = path_finder.find_path(NDO, loose, depth=2)
+    assert fits(simulate(NDO, result.steps), loose)
+    assert all(c.category == want.category
+               for c, want in zip(simulate(NDO, result.steps), loose))
+
+
+def test_x_target_spots_take_high_and_low_start_cards():
+    start = [B] * 24 + [L] * 28
+    assert not path_finder.tracked_cards(start, [deck.indifferent_card()] * 52).goals
+    assert path_finder.find_path(start, [deck.indifferent_card()] * 52).steps == []
+
+
+def test_band_counts_must_add_up():
+    with pytest.raises(ValueError, match="same cards"):
+        path_finder.tracked_cards([B] * 52, [L] * 52)
+    with pytest.raises(ValueError, match="same cards"):
+        path_finder.tracked_cards(NDO, [B] * 25 + [L] * 27)  # only 24 high cards
+
+
+def test_high_low_pairs_swap_into_place():
+    start = [B, L] * 26
+    end = [L, B] * 26
+    result = path_finder.find_path(start, end, depth=3)
+    states = simulate(start, result.steps)
+    assert [c.rank for c in states] == [c.rank for c in end]
+
+
 def test_depth_limits_what_counts_as_shortest():
     seq = [Step(ops.OUT_FARO), Step(ops.CUT, 10), Step(ops.OVERHAND_RUN, 7)]
     end = simulate(NDO, seq)

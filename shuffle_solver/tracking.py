@@ -15,13 +15,14 @@ optionally named with its letter and a colon: ``A: 2-KC, AC | B: 2-KH, AH``
 (see ``parse_piles`` and ``format_piles``).
 
 Indifferent cards (``X``, ``X12``) may be tracked too: each stands in for a card
-whose identity doesn't matter. They are never duplicates of one another, and
+whose identity doesn't matter (``B`` for a high card, ``L`` for a low one). They are never duplicates of one another, and
 can't be named to take out, since one is as good as any other. A ``NameCards``
 step turns some of them into real cards partway through, e.g. once it matters
 which card sits where a faro splits; ``replay`` names them in earlier tables too.
 """
 
 import re
+from collections import Counter
 from dataclasses import dataclass
 
 from . import deck
@@ -146,6 +147,10 @@ class Table:
     def indifferent_count(self):
         return sum(c.indifferent for c in self.cards())
 
+    def indifferent_kinds(self):
+        """How many indifferent cards there are of each kind: {"X": 3, "B": 1}."""
+        return Counter(c.rank for c in self.cards() if c.indifferent)
+
     def _index(self, name):
         return self.names.index(self.pile(name).name)
 
@@ -218,7 +223,7 @@ class TakeOut:
         if self.mode not in TAKE_OUT_MODES:
             raise ValueError(f"unknown take-out mode {self.mode!r}")
         if any(c.indifferent for c in self.cards):
-            raise ValueError("indifferent cards (X) can't be taken out by name; "
+            raise ValueError("indifferent cards (X, B, L) can't be taken out by name; "
                              "split them off instead")
         wanted = [c.key for c in self.cards]
         if len(set(wanted)) != len(wanted):
@@ -304,8 +309,14 @@ class NameCards:
                              f"{_count(len(self.cards))} from position {self.position}")
         named = [n for n in range(at, end) if not cards[n].indifferent]
         if named:
-            raise ValueError("not an X card at position "
+            raise ValueError("not an indifferent card at position "
                              + ", ".join(f"{n + 1} ({cards[n].pretty()})" for n in named))
+        wrong = [(n, c) for n, c in zip(range(at, end), self.cards)
+                 if not deck.can_match(cards[n], c)]
+        if wrong:
+            raise ValueError("; ".join(f"position {n + 1} is {cards[n].rank} "
+                                       f"({cards[n].name()}), but {c.pretty()} is {c.category}"
+                                       for n, c in wrong))
         cards[at:end] = [c.with_face_up(c.face_up or old.face_up)
                          for c, old in zip(self.cards, cards[at:end])]
         return table.with_pile(self.pile, cards)
@@ -394,8 +405,8 @@ class Rearrange:
     ``piles`` are (name or None, cards) pairs as from ``parse_piles``. Unnamed
     piles take the names of the piles already on the table, in order, and new
     letters after those. Cards may turn face up or down, but no card may
-    appear, vanish or be doubled, and there must be as many indifferent cards (X) as
-    before.
+    appear, vanish or be doubled, and there must be as many indifferent cards of
+    each kind (X, B, L) as before.
     """
 
     title: str
@@ -428,9 +439,12 @@ class Rearrange:
             problems.append("not on the table " + " ".join(_pretty_keys(extra)))
         if twice:
             problems.append("given twice " + " ".join(_pretty_keys(twice)))
-        x_new, x_old = sum(c.indifferent for c in new), table.indifferent_count()
-        if x_new != x_old:
-            problems.append(f"{x_new} indifferent cards (X) where the table has {x_old}")
+        x_new, x_old = Counter(c.rank for c in new if c.indifferent), table.indifferent_kinds()
+        for letter in deck.INDIFFERENT_RANKS:
+            if x_new[letter] != x_old[letter]:
+                kind = {deck.HIGH_INDIFFERENT: " high", deck.LOW_INDIFFERENT: " low"}.get(letter, "")
+                problems.append(f"{x_new[letter]} indifferent{kind} cards ({letter}) where the "
+                                f"table has {x_old[letter]}")
         if problems:
             raise ValueError("the new order must hold exactly the cards on the table: "
                              + "; ".join(problems))
@@ -492,7 +506,8 @@ def replay(cards, steps):
             error = (i, str(exc))
             break
         tables.append(tag_new(after))
-    untag = (lambda c: deck.indifferent_card(c.face_up) if isinstance(c, _TaggedX) else c)
+    untag = (lambda c: deck.indifferent_card(c.face_up, c.rank)
+             if isinstance(c, _TaggedX) else c)
     return [_map_cards(t, untag) for t in tables], error
 
 

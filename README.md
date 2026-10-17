@@ -126,7 +126,8 @@ Only the cards are carried over, not the shuffles.
 1. **Final deck** – pick a preset (new deck order, Si Stebbins, Aronson,
    Mnemonica), type shorthand, or set cards slot by slot. Duplicates are
    highlighted in red and missing cards are listed. Use `X` (or `X12` for
-   twelve) for indifferent cards whose identity doesn't matter.
+   twelve) for indifferent cards whose identity doesn't matter, `B` for any
+   high card (A, 9–K) and `L` for any low card (2–8).
 2. **Shuffle sequence** – add out-faros, in-faros, overhand runs, cuts and
    partial faros (pick which end the packet comes from and goes into under
    the partial faro buttons); reorder, duplicate, delete, or change X of the
@@ -177,7 +178,9 @@ then press **Find shuffles** to get numbered instructions that turn X into Y.
   where it lands: once a route is found, the starting order is rewritten with
   those X cards filled in. X cards that land on X spots stay indifferent. When both orders have X cards where the other
   names cards, the extra cards are paired with X spots one fixed way, so the
-  route is not guaranteed to be the shortest.
+  route is not guaranteed to be the shortest. `B` and `L` do the same for high
+  and low cards only; when both orders hold them they are also paired one
+  fixed way.
 
 Every answer is replayed forward and checked against Y (the PASS badge).
 
@@ -236,6 +239,8 @@ Entries are comma-separated; whitespace and case don't matter.
 | `A-KCHSD` | clubs A–K, then hearts, spades, diamonds |
 | `X` | an indifferent card: any card, it doesn't matter which |
 | `X12` | 12 indifferent cards in a row (``X12` `` all face up) |
+| `B`, `B12` | an indifferent high card: any A, 9, 10, J, Q or K |
+| `L`, `L12` | an indifferent low card: any 2 to 8 |
 
 Face-up is a display flag only; it never affects the shuffle math.
 
@@ -245,6 +250,13 @@ duplicate is enough: the X cards stand in for the cards you left out. For
 example, `AS, X50, KH` asks only for the ace of spades on top and the king of
 hearts on the bottom. The starting order then shows X where any card will do,
 and View cards draws those slots as card backs.
+
+`B` and `L` work like `X` but keep the card's band: a B is always a high card
+(ace, 9–K) and an L always a low one (2–8). The solver never puts a low card
+where the target has a B, the deck check needs a missing high card for every
+B, naming a B in Free Tracking only takes a high card, and filling a Stacking
+order puts high cards on B spots and low cards on L spots. View cards marks
+them with their letter on the card back.
 
 Free Tracking follows X cards through every step like any other card. Add
 cards takes `X5` to add five of them, and a rearrangement must keep as many X
