@@ -1263,6 +1263,12 @@ def test_a_damaged_session_starts_empty_or_skips_the_bad_tab(root, tmp_path):
     app = ShuffleSolverApp(tk.Toplevel(root), session_path=path)
     assert app.tabs.titles() == ["Good"] and app.tabs.current.title == "Good"
     assert app.tabs.current.content.model.cards == deck.parse_cards("AS, KH")
+    path.write_text(json.dumps({"version": 1, "current": 0, "tabs": [  # bad tab never shown
+        {"kind": TRAINER, "title": "Good", "state": {"cards": ["AS"]}},
+        {"kind": SOLVER, "title": "Bad", "state": {"final": ["ZZ"]}},
+    ]}), encoding="utf-8")
+    app = ShuffleSolverApp(tk.Toplevel(root), session_path=path)
+    assert app.tabs.titles() == ["Good"]
 
 
 def test_the_session_is_saved_every_so_often(root, tmp_path, monkeypatch):

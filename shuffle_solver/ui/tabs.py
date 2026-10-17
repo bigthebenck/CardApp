@@ -182,7 +182,8 @@ class TabManager:
         self._land()
         index = self.tabs.index(tab)
         self.tabs.remove(tab)
-        self._recent.remove(tab)
+        if tab in self._recent:  # a tab never shown isn't in it
+            self._recent.remove(tab)
         was_current = tab is self.current
         if was_current:
             self.current = None
