@@ -42,8 +42,11 @@ PASS/FAIL badge shows that round-trip check.
 
 ## Running
 
-Requires Python 3.10+ with Tkinter (on Debian/Ubuntu: `apt install python3-tk`)
-and [ttkbootstrap](https://github.com/israel-dryer/ttkbootstrap) for the themes.
+Requires Python 3.10+ and [PySide6](https://doc.qt.io/qtforpython-6/) (Qt 6) for the
+window. The look is frosted-glass panels over a soft colour backdrop, light or dark,
+in a choice of accent colours (View > Theme); on Windows 11 the window can also let
+the desktop show through, blurred (View > See-through window). View > Style >
+Classic switches back to the flat look and theme families the app had before.
 
 ```sh
 pip install -r requirements.txt
@@ -277,10 +280,12 @@ shuffle_solver/
   stacking.py      poker deals: which card goes where, and the stack for a deal
   deck.py          Card, shorthand parser/formatter, validation, presets
   ui/model.py      toolkit-free app state (tested without a display)
-  ui/app.py        Tkinter window: menus, files, and the kinds of tab
+  ui/app.py        Qt main window: menus, files, and the kinds of tab
   ui/tabs.py       the tab strip: add, close, rename and reorder tabs
   ui/solver_tab.py the Starting Order tab
-  ui/theme.py      ttkbootstrap theme choice and the app's custom styles
+  ui/theme.py      the glass theme: palettes, stylesheet, backdrop, settings file
+  ui/widgets.py    small Qt helpers the tabs share (panels, toned labels, ...)
+  ui/dialogs.py    message boxes, prompts and file pickers
   ui/presets.py    saved user presets and the Preset row every deck tab shows
   ui/open_in.py    the "Open in new tab" button next to each deck
   ui/x_to_y.py     the X to Y tab
@@ -294,6 +299,5 @@ tests/             pytest + hypothesis
 
 ```sh
 pip install -r requirements-dev.txt
-pytest                 # Tk window tests skip without a display
-xvfb-run -a pytest     # include them on a headless Linux box
+pytest                 # window tests draw off screen; no display needed
 ```

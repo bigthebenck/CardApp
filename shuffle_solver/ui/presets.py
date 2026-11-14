@@ -8,14 +8,11 @@ new preset, or Delete a saved one. All bars share one store, so a preset saved
 in one tab shows up in the others straight away.
 """
 
-import tkinter as tk
-from tkinter import messagebox
-
-import ttkbootstrap as tb
-from ttkbootstrap.dialogs import Querybox
+from PySide6.QtWidgets import QComboBox, QHBoxLayout, QLabel, QWidget
 
 from .. import deck
-from . import theme
+from . import dialogs, theme
+from .widgets import button
 
 SETTINGS_KEY = "presets"
 TITLE = "Presets"
@@ -86,43 +83,62 @@ class PresetBar:
 
     ``get_cards()`` returns the tab's deck to save (or raises ValueError saying
     why there is none); ``load_cards(cards)`` puts a preset's cards in the tab.
-    ``frame`` is packed by the caller, which may add buttons of its own to it.
+    ``frame`` is placed by the caller, which may add buttons of its own to its
+    right end with ``add_right``. ``dispose()`` stops listening to the store.
     """
 
     def __init__(self, parent, store, get_cards, load_cards, width=20):
         self.store, self.get_cards, self.load_cards = store, get_cards, load_cards
-        self.frame = top = tb.Frame(parent)
-        tb.Label(top, text="Preset:").pack(side=tk.LEFT)
-        self.var = tk.StringVar(value=next(iter(store.names())))
-        self.combo = tb.Combobox(top, textvariable=self.var, values=store.names(),
-                                 state="readonly", width=width)
-        self.combo.pack(side=tk.LEFT, padx=4)
-        self.combo.bind("<<ComboboxSelected>>", lambda e: self._update_delete())
-        tb.Button(top, text="Load", command=self.load).pack(side=tk.LEFT)
-        tb.Button(top, text="Save as…", bootstyle="secondary",
-                  command=self.save_as).pack(side=tk.LEFT, padx=(4, 0))
-        self.delete_button = tb.Button(top, text="Delete", bootstyle="secondary-outline",
-                                       command=self.delete)
-        self.delete_button.pack(side=tk.LEFT, padx=(4, 0))
+        self.frame = QWidget(parent)
+        layout = self._layout = QHBoxLayout(self.frame)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+        layout.addWidget(QLabel("Preset:"))
+        self.combo = QComboBox()
+        self.combo.addItems(store.names())
+        self.combo.setMinimumContentsLength(width)
+        self.combo.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.combo.currentTextChanged.connect(lambda _t: self._update_delete())
+        layout.addWidget(self.combo)
+        layout.addWidget(button("Load", self.load))
+        layout.addWidget(button("Save as…", self.save_as))
+        self.delete_button = button("Delete", self.delete, kind="danger")
+        layout.addWidget(self.delete_button)
+        layout.addStretch(1)
         self._update_delete()
         store.subscribe(self._on_store_changed)
-        top.bind("<Destroy>", lambda e: store.unsubscribe(self._on_store_changed))
+        self.frame.destroyed.connect(lambda *_a: self.dispose())
+
+    def add_right(self, widget):
+        self._layout.addWidget(widget)
+
+    def dispose(self):
+        self.store.unsubscribe(self._on_store_changed)
+
+    def get(self):
+        """The preset picked."""
+        return self.combo.currentText()
+
+    def set(self, name):
+        self.combo.setCurrentText(name)
 
     def _on_store_changed(self, store):
-        self.combo.config(values=store.names())
-        if self.var.get() not in store.names():
-            self.var.set(next(iter(store.names())))
+        picked = self.get()
+        self.combo.blockSignals(True)
+        self.combo.clear()
+        self.combo.addItems(store.names())
+        self.combo.setCurrentText(picked if picked in store.names() else store.names()[0])
+        self.combo.blockSignals(False)
         self._update_delete()
 
     def _update_delete(self):
-        builtin = self.store.is_builtin(self.var.get())
-        self.delete_button.config(state=tk.DISABLED if builtin else tk.NORMAL)
+        self.delete_button.setEnabled(not self.store.is_builtin(self.get()))
 
     def load(self):
         try:
-            self.load_cards(self.store.cards(self.var.get()))
+            self.load_cards(self.store.cards(self.get()))
         except ValueError as exc:
-            messagebox.showerror(TITLE, f"Could not load this preset: {exc}", parent=self.frame)
+            dialogs.error(self.frame, TITLE, f"Could not load this preset: {exc}")
 
     def save_as(self, name=None):
         """Save the tab's deck as a preset, asking for its name unless ``name`` is given.
@@ -134,33 +150,32 @@ class PresetBar:
             if not cards:
                 raise ValueError("there are no cards to save")
         except ValueError as exc:
-            messagebox.showerror(TITLE, f"Can't save a preset: {exc}", parent=self.frame)
+            dialogs.error(self.frame, TITLE, f"Can't save a preset: {exc}")
             return None
         asked = name is None
         if asked:
-            initial = "" if self.store.is_builtin(self.var.get()) else self.var.get()
-            name = Querybox.get_string("Name for the new preset:", TITLE, initial,
-                                       parent=self.frame)
+            initial = "" if self.store.is_builtin(self.get()) else self.get()
+            name = dialogs.ask_string(self.frame, TITLE, "Name for the new preset:", initial)
             if name is None:
                 return None
         name = name.strip()
-        if asked and name in self.store.user and not messagebox.askyesno(
-                TITLE, f"Replace the saved preset \"{name}\"?", parent=self.frame):
+        if asked and name in self.store.user and not dialogs.ask_yes_no(
+                self.frame, TITLE, f"Replace the saved preset \"{name}\"?"):
             return None
         try:
             name = self.store.save(name, cards)
         except ValueError as exc:
-            messagebox.showerror(TITLE, f"Can't save a preset: {exc}", parent=self.frame)
+            dialogs.error(self.frame, TITLE, f"Can't save a preset: {exc}")
             return None
-        self.var.set(name)
+        self.set(name)
         self._update_delete()
         return name
 
     def delete(self, confirm=True):
-        name = self.var.get()
+        name = self.get()
         if self.store.is_builtin(name):
             return
-        if confirm and not messagebox.askyesno(TITLE, f"Delete the preset \"{name}\"?",
-                                               parent=self.frame):
+        if confirm and not dialogs.ask_yes_no(self.frame, TITLE,
+                                              f"Delete the preset \"{name}\"?"):
             return
         self.store.delete(name)

@@ -7,19 +7,33 @@ state lives in ``TrainerModel``; this module only draws it and forwards user
 input.
 """
 
-import tkinter as tk
-
-import ttkbootstrap as tb
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QFont
+from PySide6.QtWidgets import QCheckBox, QLabel, QLineEdit, QSplitter
 
 from .. import deck
 from .card_viewer import CardViewers
 from .model import BEFORE, CARD_AT, POSITION_OF, QUESTION_KINDS, TrainerModel
 from .open_in import OpenInTabButton
 from .presets import PresetBar, PresetStore
+from .sequence_panel import spin_box
+from .widgets import Debounce, Panel, button, column, label, row, set_tone, text_box
 
-TEXT_DEBOUNCE_MS = 400
-MONO = ("Courier", 10)
-QUESTION_FONT = ("TkDefaultFont", 18, "bold")
+
+class _AnswerBox(QLineEdit):
+    """Enter checks the answer, Escape gives up."""
+
+    def __init__(self, submit, give_up):
+        super().__init__()
+        self._submit, self._give_up = submit, give_up
+
+    def keyPressEvent(self, event):
+        if event.key() in (Qt.Key_Return, Qt.Key_Enter):
+            self._submit()
+        elif event.key() == Qt.Key_Escape:
+            self._give_up()
+        else:
+            super().keyPressEvent(event)
 
 
 class TrainerTab:
@@ -28,122 +42,111 @@ class TrainerTab:
         self.model = model or TrainerModel()
         self.presets = presets or PresetStore()
         self.open_in = open_in
-        self._text_job = None
         self._syncing = False
         self._text_is_source = False
         self._text_cards = None  # cards the shorthand box last described
 
-        self.frame = tb.Panedwindow(parent, orient=tk.HORIZONTAL)
+        self.frame = QSplitter(Qt.Horizontal, parent)
+        self.frame.setChildrenCollapsible(False)
+        self._text_job = Debounce(self.frame, self.apply_text)
         self.viewers = CardViewers(self.frame)
-        left = tb.Frame(self.frame)
-        self._build_deck_input(left)
-        self.frame.add(left, weight=1)
-        right = tb.Frame(self.frame)
-        self._build_settings(right)
-        self._build_quiz(right)
-        self.frame.add(right, weight=2)
+        left, left_layout = column()
+        self._build_deck_input(left_layout)
+        left_layout.addStretch(1)
+        self.frame.addWidget(left)
+        right, right_layout = column(spacing=10)
+        self._build_settings(right_layout)
+        self._build_quiz(right_layout)
+        self.frame.addWidget(right)
+        self.frame.setStretchFactor(0, 1)
+        self.frame.setStretchFactor(1, 2)
 
         self.model.subscribe(lambda _m: self.refresh())
         self.refresh()
 
     # --- setup ----------------------------------------------------------------------
 
-    def _build_deck_input(self, parent):
-        frame = tb.LabelFrame(parent, text="Stack to train (top first)", padding=6)
-        frame.pack(fill=tk.X)
+    def _build_deck_input(self, parent_layout):
+        frame = Panel("Stack to train (top first)")
+        parent_layout.addWidget(frame)
+        body = frame.body
 
         self.preset_bar = PresetBar(frame, self.presets, self._preset_cards,
                                     self.model.set_cards)
-        self.preset_bar.frame.pack(fill=tk.X)
-        self.preset_var = self.preset_bar.var
-        tb.Button(self.preset_bar.frame, text="Clear",
-                  command=lambda: self.model.set_cards([])).pack(side=tk.RIGHT)
+        self.preset_bar.add_right(button("Clear", lambda: self.model.set_cards([])))
+        body.addWidget(self.preset_bar.frame)
 
-        label_row = tb.Frame(frame)
-        label_row.pack(fill=tk.X, pady=(6, 0))
-        tb.Label(label_row, text="Shorthand (e.g.  A-KH, A-KC, K-AD, K-AS):").pack(side=tk.LEFT)
-        tb.Button(label_row, text="View cards", command=self.view_cards).pack(side=tk.RIGHT)
-        self.deck_text = tb.Text(frame, height=4, width=44, wrap=tk.WORD, font=MONO, undo=True)
-        self.deck_text.pack(fill=tk.X)
-        self.deck_text.bind("<<Modified>>", self._on_text_modified)
+        body.addWidget(row(QLabel("Shorthand (e.g.  A-KH, A-KC, K-AD, K-AS):"), None,
+                           button("View cards", self.view_cards)))
+        self.deck_text = text_box(lines=4)
+        self.deck_text.textChanged.connect(self._on_text_modified)
+        body.addWidget(self.deck_text)
         if self.open_in is not None:
             self.open_button = OpenInTabButton(frame, self._preset_cards, self.open_in)
-            self.open_button.button.pack(anchor=tk.E, pady=(4, 0))
-        self.text_error = tb.Label(frame, text="", bootstyle="danger", wraplength=380)
-        self.text_error.pack(anchor=tk.W)
-        self.deck_status = tb.Label(frame, text="", wraplength=380, justify=tk.LEFT)
-        self.deck_status.pack(anchor=tk.W)
+            body.addWidget(self.open_button.button, 0, Qt.AlignRight)
+        self.text_error = label("", tone="danger", wrap=True)
+        body.addWidget(self.text_error)
+        self.deck_status = label("", wrap=True)
+        body.addWidget(self.deck_status)
 
-    def _build_settings(self, parent):
-        frame = tb.LabelFrame(parent, text="What to train", padding=6)
-        frame.pack(fill=tk.X)
+    def _build_settings(self, parent_layout):
+        frame = Panel("What to train")
+        parent_layout.addWidget(frame)
+        body = frame.body
 
-        row = tb.Frame(frame)
-        row.pack(fill=tk.X)
-        tb.Label(row, text="Positions").pack(side=tk.LEFT)
-        self.first_var, self.last_var = tk.StringVar(), tk.StringVar()
-        self.range_boxes = []
-        for var, after in ((self.first_var, "to"), (self.last_var, None)):
-            box = tb.Spinbox(row, from_=1, to=52, width=4, textvariable=var,
-                             command=self.apply_range)
-            box.pack(side=tk.LEFT, padx=4)
-            for seq in ("<Return>", "<FocusOut>"):
-                box.bind(seq, lambda e: self.apply_range())
-            self.range_boxes.append(box)
-            if after:
-                tb.Label(row, text=after).pack(side=tk.LEFT)
-        self.range_total = tb.Label(row, text="", style="Muted.TLabel")
-        self.range_total.pack(side=tk.LEFT, padx=(2, 8))
-        tb.Button(row, text="Whole stack", bootstyle="secondary",
-                  command=self.whole_deck).pack(side=tk.LEFT)
-        self.range_error = tb.Label(frame, text="", bootstyle="danger")
-        self.range_error.pack(anchor=tk.W)
+        self.first_box = spin_box(1, 52)
+        self.last_box = spin_box(1, 52)
+        for box in (self.first_box, self.last_box):
+            box.valueChanged.connect(lambda _v: self.apply_range())
+        self.range_total = label("", tone="muted")
+        body.addWidget(row(QLabel("Positions"), self.first_box, QLabel("to"), self.last_box,
+                           self.range_total, 8, button("Whole stack", self.whole_deck), None))
+        self.range_error = label("", tone="danger")
+        body.addWidget(self.range_error)
 
-        row = tb.Frame(frame)
-        row.pack(fill=tk.X, pady=(4, 0))
-        tb.Label(row, text="Ask:").pack(side=tk.LEFT)
-        self.kind_vars = {}
-        for kind, label in QUESTION_KINDS.items():
-            var = tk.BooleanVar(value=kind in self.model.kinds)
-            tb.Checkbutton(row, text=label, variable=var,
-                           command=lambda k=kind: self.model.set_kind(
-                               k, self.kind_vars[k].get())).pack(side=tk.LEFT, padx=(6, 0))
-            self.kind_vars[kind] = var
+        self.kind_checks = {}
+        checks = [QLabel("Ask:")]
+        for kind, text in QUESTION_KINDS.items():
+            check = QCheckBox(text)
+            check.setChecked(kind in self.model.kinds)
+            check.toggled.connect(lambda on, k=kind: self.model.set_kind(k, on))
+            checks.append(check)
+            self.kind_checks[kind] = check
+        body.addWidget(row(*checks, None, spacing=12))
 
-    def _build_quiz(self, parent):
-        frame = tb.LabelFrame(parent, text="Question", padding=12)
-        frame.pack(fill=tk.BOTH, expand=True, pady=(6, 0))
+    def _build_quiz(self, parent_layout):
+        frame = Panel("Question")
+        parent_layout.addWidget(frame, 1)
+        body = frame.body
+        body.setSpacing(10)
 
-        self.question_label = tb.Label(frame, text="", font=QUESTION_FONT, wraplength=520)
-        self.question_label.pack(anchor=tk.W, pady=(0, 10))
+        self.question_label = label("", role="question", wrap=True)
+        body.addWidget(self.question_label)
 
-        row = tb.Frame(frame)
-        row.pack(fill=tk.X)
-        self.answer_var = tk.StringVar()
-        self.answer_entry = tb.Entry(row, textvariable=self.answer_var, width=12,
-                                     font=("TkDefaultFont", 14))
-        self.answer_entry.pack(side=tk.LEFT)
-        self.answer_entry.bind("<Return>", lambda e: self.submit())
-        self.answer_entry.bind("<Escape>", lambda e: self.give_up())
-        self.check_button = tb.Button(row, text="Check", command=self.submit)
-        self.check_button.pack(side=tk.LEFT, padx=6)
-        self.give_up_button = tb.Button(row, text="Don't know", bootstyle="secondary",
-                                        command=self.give_up)
-        self.give_up_button.pack(side=tk.LEFT)
-        tb.Label(frame, text="Enter checks the answer, Escape gives up. Type cards as "
-                             "shorthand, e.g. 7H or 10S.",
-                 style="Muted.TLabel").pack(anchor=tk.W, pady=(4, 0))
+        self.answer_entry = _AnswerBox(self.submit, self.give_up)
+        font = QFont(self.answer_entry.font())
+        font.setPointSize(14)
+        self.answer_entry.setFont(font)
+        self.answer_entry.setFixedWidth(160)
+        self.check_button = button("Check", self.submit, kind="primary")
+        self.give_up_button = button("Don't know", self.give_up)
+        body.addWidget(row(self.answer_entry, self.check_button, self.give_up_button, None))
+        body.addWidget(label("Enter checks the answer, Escape gives up. Type cards as "
+                             "shorthand, e.g. 7H or 10S.", tone="muted"))
 
-        self.feedback = tb.Label(frame, text="", font=("TkDefaultFont", 12), wraplength=520,
-                                 justify=tk.LEFT)
-        self.feedback.pack(anchor=tk.W, pady=(12, 0))
+        self.feedback = label("", wrap=True)
+        font = QFont(self.feedback.font())
+        font.setPointSize(12)
+        self.feedback.setFont(font)
+        body.addWidget(self.feedback)
+        body.addStretch(1)
 
-        stats = tb.Frame(frame)
-        stats.pack(side=tk.BOTTOM, fill=tk.X, pady=(12, 0))
-        self.stats_label = tb.Label(stats, text="", font=("TkDefaultFont", 11))
-        self.stats_label.pack(side=tk.LEFT)
-        tb.Button(stats, text="Reset score", bootstyle="secondary-outline",
-                  command=self.model.reset_stats).pack(side=tk.RIGHT)
+        self.stats_label = QLabel("")
+        font = QFont(self.stats_label.font())
+        font.setPointSize(11)
+        self.stats_label.setFont(font)
+        body.addWidget(row(self.stats_label, None,
+                           button("Reset score", self.model.reset_stats)))
 
     # --- deck events ----------------------------------------------------------------------
 
@@ -157,35 +160,26 @@ class TrainerTab:
             raise ValueError(f"fix the shorthand first ({self.model.error})")
         return self.model.cards
 
-    def _on_text_modified(self, _event):
-        if not self.deck_text.edit_modified():
-            return
-        self.deck_text.edit_modified(False)
-        if self._syncing:
-            return
-        if self._text_job is not None:
-            self.frame.after_cancel(self._text_job)
-        self._text_job = self.frame.after(TEXT_DEBOUNCE_MS, self.apply_text)
+    def _on_text_modified(self):
+        if not self._syncing:
+            self._text_job.start()
 
     def close(self):
         """Stop pending edits before the tab's widgets go away."""
-        if self._text_job is not None:
-            self.frame.after_cancel(self._text_job)
-            self._text_job = None
+        self._text_job.stop()
+        self.preset_bar.dispose()
 
     def apply_text(self):
         """Parse the shorthand box into the model now (also called after the debounce)."""
-        if self._text_job is not None:
-            self.frame.after_cancel(self._text_job)
-        self._text_job = None
+        self._text_job.stop()
         self._text_is_source = True
         try:
-            self.model.set_from_text(self.deck_text.get("1.0", tk.END))
+            self.model.set_from_text(self.deck_text.toPlainText())
         finally:
             self._text_is_source = False
 
     def view_cards(self):
-        if self._text_job is not None:  # show what was just typed
+        if self._text_job.pending:  # show what was just typed
             self.apply_text()
         self.viewers.open("stack", "Stack (top first)", lambda: self.model.cards)
 
@@ -195,28 +189,27 @@ class TrainerTab:
         if not self.model.cards:
             return False
         try:
-            self.model.set_range(int(self.first_var.get()), int(self.last_var.get()))
+            self.model.set_range(self.first_box.value(), self.last_box.value())
         except ValueError as exc:
-            if "invalid literal" in str(exc):
-                exc = "positions are whole numbers"
-            self.range_error.config(text=f"⚠ {exc}")
+            self.range_error.setText(f"⚠ {exc}")
             return False
-        self.range_error.config(text="")
+        self.range_error.setText("")
         return True
 
     def whole_deck(self):
         if self.model.cards:
             self.model.whole_deck()
-        self.range_error.config(text="")
+        self.range_error.setText("")
 
     def submit(self):
         """Check the typed answer; returns the Outcome, or None if nothing was scored."""
         if self.model.question is None:
             return None
         try:
-            outcome = self.model.answer(self.answer_var.get())
+            outcome = self.model.answer(self.answer_entry.text())
         except ValueError as exc:
-            self.feedback.config(text=f"⚠ {exc}", bootstyle="warning")
+            self.feedback.setText(f"⚠ {exc}")
+            set_tone(self.feedback, "warning")
             return None
         self._next()
         return outcome
@@ -229,8 +222,8 @@ class TrainerTab:
         return outcome
 
     def _next(self):
-        self.answer_var.set("")
-        self.answer_entry.focus_set()
+        self.answer_entry.clear()
+        self.answer_entry.setFocus()
 
     # --- refresh from model -------------------------------------------------------------
 
@@ -241,51 +234,54 @@ class TrainerTab:
         elif m.error is None and m.cards != self._text_cards:
             self._text_cards = list(m.cards)
             self._syncing = True
-            self.deck_text.delete("1.0", tk.END)
-            self.deck_text.insert("1.0", deck.format_cards(m.cards))
-            self.deck_text.edit_modified(False)
+            self.deck_text.setPlainText(deck.format_cards(m.cards))
             self._syncing = False
-        self.text_error.config(text=f"⚠ {m.error}" if m.error else "")
+        self.text_error.setText(f"⚠ {m.error}" if m.error else "")
         problems = m.deck_problems()
         if problems:
-            self.deck_status.config(text="\n".join(problems), bootstyle="danger")
+            self.deck_status.setText("\n".join(problems))
+            set_tone(self.deck_status, "danger")
         else:
             n = len(m.cards)
-            self.deck_status.config(text=f"✓ {n} card{'s' if n != 1 else ''}, each once.",
-                                    bootstyle="success")
+            self.deck_status.setText(f"✓ {n} card{'s' if n != 1 else ''}, each once.")
+            set_tone(self.deck_status, "success")
 
         n = len(m.cards)
-        for box in self.range_boxes:
-            box.config(to=max(n, 1))
-        if n:
-            self.first_var.set(str(m.first))
-            self.last_var.set(str(m.last))
-        self.range_total.config(text=f"of {n}" if n else "")
-        for kind, var in self.kind_vars.items():  # e.g. after loading a saved tab
-            if var.get() != (kind in m.kinds):
-                var.set(kind in m.kinds)
+        for box, value in ((self.first_box, m.first), (self.last_box, m.last)):
+            box.blockSignals(True)
+            box.setMaximum(max(n, 1))
+            if n:
+                box.setValue(value)
+            box.blockSignals(False)
+        self.range_total.setText(f"of {n}" if n else "")
+        for kind, check in self.kind_checks.items():  # e.g. after loading a saved tab
+            if check.isChecked() != (kind in m.kinds):
+                check.blockSignals(True)
+                check.setChecked(kind in m.kinds)
+                check.blockSignals(False)
 
         q = m.question
-        self.question_label.config(text=q.prompt() if q else m.unavailable_reason())
-        state = tk.NORMAL if q else tk.DISABLED
+        self.question_label.setText(q.prompt() if q else m.unavailable_reason())
         for widget in (self.answer_entry, self.check_button, self.give_up_button):
-            widget.config(state=state)
+            widget.setEnabled(q is not None)
 
         o = m.last_outcome
         if o is None:
-            self.feedback.config(text="")
+            self.feedback.setText("")
         elif o.correct:
-            self.feedback.config(text=f"✓ Right — {self._recap(o)}", bootstyle="success")
+            self.feedback.setText(f"✓ Right — {self._recap(o)}")
+            set_tone(self.feedback, "success")
         else:
             given = f"You said {o.given}. " if o.given else ""
-            self.feedback.config(text=f"✗ {given}{self._recap(o)}", bootstyle="danger")
+            self.feedback.setText(f"✗ {given}{self._recap(o)}")
+            set_tone(self.feedback, "danger")
 
         if m.asked:
-            self.stats_label.config(
-                text=f"Session: {m.correct} / {m.asked} right ({m.accuracy:.0%})   "
-                     f"Streak: {m.streak}   Best: {m.best_streak}")
+            self.stats_label.setText(
+                f"Session: {m.correct} / {m.asked} right ({m.accuracy:.0%})   "
+                f"Streak: {m.streak}   Best: {m.best_streak}")
         else:
-            self.stats_label.config(text="Session: no answers yet")
+            self.stats_label.setText("Session: no answers yet")
         self.viewers.refresh()
 
     @staticmethod

@@ -1,6 +1,6 @@
 """Ask GitHub for a newer version and, only if the user agrees, install it.
 
-``UpdateChecker.check`` reads the latest release on a worker thread (the Tk
+``UpdateChecker.check`` reads the latest release on a worker thread (the Qt
 side polls it, as the X to Y search does). When a newer version exists it
 shows ``UpdateDialog``; nothing is downloaded unless the user presses its
 install button. The packaged app then downloads the installer, checks its
@@ -10,21 +10,21 @@ SHA-256, runs it and quits; a copy run from source opens the release page.
 import os
 import tempfile
 import threading
-import tkinter as tk
 import webbrowser
-from tkinter import messagebox
 
-import ttkbootstrap as tb
+from PySide6.QtCore import QTimer
+from PySide6.QtWidgets import QDialog, QLabel, QProgressBar, QVBoxLayout
 
 from .. import __version__, updater
-from . import theme
+from . import dialogs, theme
+from .widgets import button, label, row, text_box
 
 POLL_MS = 100
 TITLE = "Check for updates"
 
 
 class _Worker:
-    """Runs ``task(report)`` on a thread; the Tk side polls ``done``."""
+    """Runs ``task(report)`` on a thread; the Qt side polls ``done``."""
 
     def __init__(self, task):
         self.cancel = threading.Event()
@@ -45,15 +45,15 @@ class _Worker:
             self.done.set()
 
     def report(self, done, total):
-        self.progress = (done, total)  # a single assignment, read by the Tk thread
+        self.progress = (done, total)  # a single assignment, read by the Qt thread
 
 
-def _poll(widget, worker, finish, tick=None):
-    """Call ``tick()`` until ``worker`` is done, then ``finish()``, on the Tk thread."""
+def _poll(owner, worker, finish, tick=None):
+    """Call ``tick()`` until ``worker`` is done, then ``finish()``, on the Qt thread."""
     if not worker.done.is_set():
         if tick:
             tick()
-        widget.after(POLL_MS, lambda: _poll(widget, worker, finish, tick))
+        QTimer.singleShot(POLL_MS, owner, lambda: _poll(owner, worker, finish, tick))
         return
     finish()
 
@@ -61,6 +61,8 @@ def _poll(widget, worker, finish, tick=None):
 class UpdateChecker:
     def __init__(self, root, settings_path, fetch=updater.fetch_latest_release,
                  installed=updater.is_installed):
+        """``root``: the main window, which the dialogs sit over and which an
+        install closes."""
         self.root = root
         self.settings_path = settings_path
         self.fetch = fetch
@@ -91,13 +93,12 @@ class UpdateChecker:
         self._worker = None
         if worker.error is not None:
             if manual:
-                messagebox.showerror(TITLE, str(worker.error), parent=self.root)
+                dialogs.error(self.root, TITLE, str(worker.error))
             return
         release = worker.result
         if not updater.is_newer(release.version, __version__):
             if manual:
-                messagebox.showinfo(TITLE, f"You have the latest version ({__version__}).",
-                                    parent=self.root)
+                dialogs.info(self.root, TITLE, f"You have the latest version ({__version__}).")
             return
         skipped = theme.read_settings(self.settings_path).get("skip_version")
         if not manual and skipped == release.version:
@@ -121,44 +122,46 @@ class UpdateDialog:
         self.installer_path = None
         self.will_install = checker.installed() and release.can_install
 
-        win = self.window = tb.Toplevel(self.root)
-        win.title("Update available")
-        win.transient(self.root)
-        win.protocol("WM_DELETE_WINDOW", self.not_now)
-        body = tb.Frame(win, padding=12)
-        body.pack(fill=tk.BOTH, expand=True)
-        tb.Label(body, text=f"Version {release.version} is available. You have {__version__}.",
-                 font=("TkDefaultFont", 11, "bold")).pack(anchor=tk.W)
-        notes = tk.Text(body, width=64, height=12, wrap=tk.WORD)
-        notes.insert("1.0", release.notes.strip() or "(No release notes.)")
-        notes.config(state=tk.DISABLED)
-        notes.pack(fill=tk.BOTH, expand=True, pady=8)
+        win = self.window = QDialog(self.root)
+        win.setWindowTitle("Update available")
+        win.rejected.connect(self.not_now)
+        layout = QVBoxLayout(win)
+        layout.setContentsMargins(16, 16, 16, 16)
+        heading = QLabel(f"Version {release.version} is available. You have {__version__}.")
+        heading.setStyleSheet("font-weight: 700; font-size: 11pt;")
+        layout.addWidget(heading)
+        notes = text_box(mono=False, read_only=True)
+        notes.setPlainText(release.notes.strip() or "(No release notes.)")
+        notes.setMinimumSize(520, 220)
+        layout.addWidget(notes, 1)
 
-        self.status = tb.Label(body, style="Muted.TLabel", text=(
-            "The installer will download, then close and update this app."
-            if self.will_install else "This opens the release page, where you can download it."))
-        self.status.pack(anchor=tk.W)
-        self.progress = tb.Progressbar(body, mode="determinate", maximum=1.0)
+        self.status = label("The installer will download, then close and update this app."
+                            if self.will_install else
+                            "This opens the release page, where you can download it.",
+                            tone="muted", wrap=True)
+        layout.addWidget(self.status)
+        self.progress = QProgressBar()
+        self.progress.setRange(0, 1000)
+        self.progress.hide()
+        layout.addWidget(self.progress)
 
-        buttons = tb.Frame(body)
-        buttons.pack(fill=tk.X, pady=(8, 0))
-        self.install_button = tb.Button(
-            buttons, bootstyle="success", command=self.install,
-            text="Download and install" if self.will_install else "Open release page")
-        self.install_button.pack(side=tk.RIGHT)
-        self.later_button = tb.Button(buttons, text="Not now", bootstyle="secondary",
-                                      command=self.not_now)
-        self.later_button.pack(side=tk.RIGHT, padx=6)
-        self.skip_button = tb.Button(buttons, text="Skip this version", bootstyle="link",
-                                     command=self.skip)
-        self.skip_button.pack(side=tk.LEFT)
+        self.install_button = button(
+            "Download and install" if self.will_install else "Open release page",
+            self.install, kind="primary")
+        self.later_button = button("Not now", self.not_now)
+        self.skip_button = button("Skip this version", self.skip, kind="link")
+        layout.addWidget(row(self.skip_button, None, self.later_button, self.install_button))
+        win.show()
 
     def close(self):
         if self.worker is not None:
             self.worker.cancel.set()
         if self.checker.dialog is self:
             self.checker.dialog = None
-        self.window.destroy()
+        if self.window is not None:
+            win, self.window = self.window, None
+            win.hide()
+            win.deleteLater()
 
     def not_now(self):
         self.close()
@@ -175,13 +178,13 @@ class UpdateDialog:
         if self.worker is not None:
             return
         self.installer_path = os.path.join(tempfile.gettempdir(), self.release.installer_name)
-        self.install_button.config(state=tk.DISABLED)
-        self.skip_button.config(state=tk.DISABLED)
-        self.later_button.config(text="Cancel")
-        self.progress.pack(fill=tk.X, pady=(6, 0), before=self.install_button.master)
-        self.status.config(text="Downloading…")
+        self.install_button.setEnabled(False)
+        self.skip_button.setEnabled(False)
+        self.later_button.setText("Cancel")
+        self.progress.show()
+        self.status.setText("Downloading…")
         self.worker = _Worker(self._download)
-        # Polled from the root: Cancel closes this window while the worker winds down.
+        # Polled from the main window: Cancel closes this one while the worker winds down.
         _poll(self.root, self.worker, self._downloaded, self._show_progress)
 
     def _download(self, worker):
@@ -195,9 +198,9 @@ class UpdateDialog:
 
     def _show_progress(self):
         done, total = self.worker.progress
-        if total and not self.worker.cancel.is_set():
-            self.progress.config(value=done / total)
-            self.status.config(text=f"Downloading… {done // 1024:,} of {total // 1024:,} KB")
+        if total and not self.worker.cancel.is_set() and self.window is not None:
+            self.progress.setValue(round(done / total * 1000))
+            self.status.setText(f"Downloading… {done // 1024:,} of {total // 1024:,} KB")
 
     def _downloaded(self):
         worker, self.worker = self.worker, None
@@ -210,15 +213,15 @@ class UpdateDialog:
             return  # the window is already closed
         if worker.error is not None:
             self.close()
-            if messagebox.askyesno(TITLE, f"{worker.error}\n\nOpen the release page instead?",
-                                   parent=self.root):
+            if dialogs.ask_yes_no(self.root, TITLE,
+                                  f"{worker.error}\n\nOpen the release page instead?"):
                 webbrowser.open(self.release.page_url)
             return
         try:
             updater.run_installer(self.installer_path)
         except OSError as exc:
             self.close()
-            messagebox.showerror(TITLE, f"Could not start the installer:\n{exc}",
-                                 parent=self.root)
+            dialogs.error(self.root, TITLE, f"Could not start the installer:\n{exc}")
             return
-        self.root.destroy()  # the installer replaces our files and starts the new version
+        self.close()
+        self.root.close()  # the installer replaces our files and starts the new version

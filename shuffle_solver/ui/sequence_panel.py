@@ -6,16 +6,19 @@ with the ``StepList`` methods and shows the deck states its owner hands it;
 it contains no shuffle math.
 """
 
-import tkinter as tk
-
-import ttkbootstrap as tb
+from PySide6.QtCore import QItemSelectionModel, Qt
+from PySide6.QtGui import QBrush, QFont
+from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QGridLayout, QHBoxLayout,
+                               QHeaderView, QLabel, QSpinBox, QStyle, QStyledItemDelegate,
+                               QTabWidget, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget)
 
 from .. import shuffle_ops as ops
 from .. import solver
 from . import theme
 from .model import DECK_SIZE, format_splits, split_cards
+from .widgets import Panel, button, label, row
 
-MONO = ("Courier", 10)
+ROW_ID = Qt.UserRole
 
 # Partial faro packet choices: label -> (cut from, woven into)
 PARTIAL_DIRECTIONS = {
@@ -27,13 +30,80 @@ PARTIAL_DIRECTIONS = {
 
 HELP_TEXT = ("Overhand run: X = 1–52 (52 reverses the deck). "
              "Packet run: pick up the top X cards (2–52), run Y of them one at a "
-             "time onto the deck and drop the rest on top; Y blank runs them "
+             "time onto the deck and drop the rest on top; Y \"all\" runs them "
              "all, reversing the top X. "
              "Cut: X = 1–51. Partial faro: cut off X cards (up to 26) from "
              "the top or bottom and weave them into the top or bottom of "
              "the rest. Out keeps the packet's outer card on the outside "
              "(its top card on top, or its bottom card on the bottom); in "
              "tucks it one card inside.")
+
+
+def spin_box(lo, hi, value=None, blank=None):
+    """A number box; with ``blank``, its lowest value shows as that text (meaning none)."""
+    box = QSpinBox()
+    box.setRange(lo, hi)
+    box.setKeyboardTracking(False)  # report a value once typing is done, not per keystroke
+    if blank is not None:
+        box.setSpecialValueText(blank)
+    if value is not None:
+        box.setValue(value)
+    box.setMinimumWidth(64)
+    return box
+
+
+class _TintDelegate(QStyledItemDelegate):
+    """Paints a row's own background (a group's colour) under the stylesheet's drawing,
+    which would otherwise leave it out."""
+
+    def paint(self, painter, option, index):
+        brush = index.data(Qt.BackgroundRole)
+        if brush is not None and not option.state & QStyle.State_Selected:
+            painter.fillRect(option.rect, brush)
+        super().paint(painter, option, index)
+
+
+class StepTree(QTreeWidget):
+    """The step list: Delete removes the selected step, Escape runs ``on_escape``."""
+
+    def __init__(self):
+        super().__init__()
+        self.on_delete = None
+        self.on_escape = None
+        self.setItemDelegate(_TintDelegate(self))
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key_Delete and self.on_delete is not None:
+            self.on_delete()
+        elif event.key() == Qt.Key_Escape and self.on_escape is not None:
+            self.on_escape()
+        else:
+            super().keyPressEvent(event)
+
+    def item_of(self, row_id):
+        for item in self.all_items():
+            if item.data(0, ROW_ID) == row_id:
+                return item
+        return None
+
+    def all_items(self):
+        out = []
+        for i in range(self.topLevelItemCount()):
+            top = self.topLevelItem(i)
+            out.append(top)
+            out += [top.child(j) for j in range(top.childCount())]
+        return out
+
+    def children_of(self, row_id=None):
+        """The row ids at the top level, or under group ``row_id``."""
+        if row_id is None:
+            return tuple(self.topLevelItem(i).data(0, ROW_ID)
+                         for i in range(self.topLevelItemCount()))
+        item = self.item_of(row_id)
+        return tuple(item.child(j).data(0, ROW_ID) for j in range(item.childCount()))
+
+    def selected_ids(self):
+        return [item.data(0, ROW_ID) for item in self.selectedItems()]
 
 
 class SequencePanel:
@@ -45,10 +115,10 @@ class SequencePanel:
     ``deck_size(index)`` is the size of the deck a new step at ``index`` would be
     done on (None if unknown; default: always a full deck). ``row_problem(index)``
     gives the message for a step that can't be done, else None.
-    ``extra_tabs`` are (title, build(frame)) pairs shown next to the shuffle buttons.
+    ``extra_tabs`` are (title, build(widget)) pairs shown next to the shuffle buttons.
     ``groups()`` gives the model's step groups (see ``StepGroup``); with it, several
     steps can be selected at once and each group is a coloured, foldable row.
-    ``controls``, if given, is a frame elsewhere to hold the add buttons and help,
+    ``controls``, if given, is a layout elsewhere to hold the add buttons and help,
     leaving the panel to the step list. ``splits_in_list`` shows both cards at
     each split in the list's own column instead of in a list under it.
     """
@@ -65,171 +135,156 @@ class SequencePanel:
         self.row_problem = row_problem or (lambda _index: None)
         self._problem_shown = False
         self.splits_in_list = splits_in_list
-        self.frame = tb.LabelFrame(parent, text=title, padding=6)
+        self.frame = Panel(title, parent)
         self._build(extra_buttons, extra_tabs, controls)
 
     def _build(self, extra_buttons, extra_tabs, controls):
-        frame = self.frame
-        host = frame if controls is None else controls  # where the add buttons go
+        body = self.frame.body
+        host = body if controls is None else controls  # where the add buttons go
         if extra_tabs:
-            self.add_tabs = tb.Notebook(host)
-            self.add_tabs.pack(fill=tk.X)
-            add = tb.Frame(self.add_tabs, padding=4)
-            self.add_tabs.add(add, text="Shuffles")
+            self.add_tabs = QTabWidget()
+            host.addWidget(self.add_tabs)
+            add = QWidget()
+            self.add_tabs.addTab(add, "Shuffles")
             for tab_title, build in extra_tabs:
-                tab = tb.Frame(self.add_tabs, padding=4)
+                tab = QWidget()
                 build(tab)
-                self.add_tabs.add(tab, text=tab_title)
+                self.add_tabs.addTab(tab, tab_title)
         else:
-            add = tb.Frame(host)
-            add.pack(fill=tk.X)
-        self.faro_buttons = [
-            tb.Button(add, text="+ Out-Faro", command=lambda: self.add_step(ops.OUT_FARO)),
-            tb.Button(add, text="+ In-Faro", command=lambda: self.add_step(ops.IN_FARO))]
-        for col, button in enumerate(self.faro_buttons):
-            button.grid(row=0, column=col, sticky=tk.EW)
-        tb.Button(add, text="+ Overhand Run",
-                  command=lambda: self.add_step(ops.OVERHAND_RUN)).grid(row=1, column=0,
-                                                                        sticky=tk.EW)
-        tb.Button(add, text="+ Cut",
-                  command=lambda: self.add_step(ops.CUT)).grid(row=1, column=1, sticky=tk.EW)
-        tb.Button(add, text="+ Partial Out-Faro",
-                  command=lambda: self.add_step(self.partial_kind(True))).grid(
-            row=2, column=0, sticky=tk.EW)
-        tb.Button(add, text="+ Partial In-Faro",
-                  command=lambda: self.add_step(self.partial_kind(False))).grid(
-            row=2, column=1, sticky=tk.EW)
-        packet = tb.Frame(add)
-        packet.grid(row=3, column=0, columnspan=2, sticky=tk.EW, pady=(2, 0))
-        tb.Label(packet, text="Partial faro packet:").pack(side=tk.LEFT)
-        self.partial_dir_var = tk.StringVar(value=next(iter(PARTIAL_DIRECTIONS)))
-        tb.Combobox(packet, textvariable=self.partial_dir_var, values=list(PARTIAL_DIRECTIONS),
-                    state="readonly", width=18).pack(side=tk.LEFT, padx=4)
-        tb.Button(add, text="+ Packet Run",
-                  command=lambda: self.add_step(ops.PACKET_RUN)).grid(row=4, column=0,
-                                                                      sticky=tk.EW, pady=(2, 0))
-        run = tb.Frame(add)
-        run.grid(row=4, column=1, columnspan=3, sticky=tk.W, padx=(6, 0), pady=(2, 0))
-        tb.Label(run, text="Run Y:").pack(side=tk.LEFT)
-        self.new_y_var = tk.StringVar(value="")
-        tb.Spinbox(run, from_=1, to=DECK_SIZE, width=4,
-                   textvariable=self.new_y_var).pack(side=tk.LEFT, padx=4)
-        tb.Label(run, text="(blank = all)", style="Muted.TLabel").pack(side=tk.LEFT)
-        self.odd_note = tb.Label(add, text="", style="Muted.TLabel")
-        self.odd_note.grid(row=5, column=0, columnspan=4, sticky=tk.W)
-        tb.Label(add, text="X:").grid(row=1, column=2, rowspan=2, padx=(8, 2))
-        self.new_x_var = tk.StringVar(value="5")
-        self.new_x = tb.Spinbox(add, from_=1, to=DECK_SIZE, width=4,
-                                textvariable=self.new_x_var)
-        self.new_x.grid(row=1, column=3, rowspan=2)
-        add.columnconfigure(0, weight=1)
-        add.columnconfigure(1, weight=1)
+            add = QWidget()
+            host.addWidget(add)
+        grid = QGridLayout(add)
+        grid.setContentsMargins(0, 6 if extra_tabs else 0, 0, 0)
+        grid.setHorizontalSpacing(6)
+        grid.setVerticalSpacing(4)
+        self.faro_buttons = [button("+ Out-Faro", lambda: self.add_step(ops.OUT_FARO)),
+                             button("+ In-Faro", lambda: self.add_step(ops.IN_FARO))]
+        for col, b in enumerate(self.faro_buttons):
+            grid.addWidget(b, 0, col)
+        grid.addWidget(button("+ Overhand Run", lambda: self.add_step(ops.OVERHAND_RUN)), 1, 0)
+        grid.addWidget(button("+ Cut", lambda: self.add_step(ops.CUT)), 1, 1)
+        grid.addWidget(button("+ Partial Out-Faro",
+                              lambda: self.add_step(self.partial_kind(True))), 2, 0)
+        grid.addWidget(button("+ Partial In-Faro",
+                              lambda: self.add_step(self.partial_kind(False))), 2, 1)
+        self.partial_dir = QComboBox()
+        self.partial_dir.addItems(list(PARTIAL_DIRECTIONS))
+        grid.addWidget(row(QLabel("Partial faro packet:"), self.partial_dir, None), 3, 0, 1, 4)
+        grid.addWidget(button("+ Packet Run", lambda: self.add_step(ops.PACKET_RUN)), 4, 0)
+        self.new_y = spin_box(0, DECK_SIZE, 0, blank="all")
+        grid.addWidget(row(QLabel("Run Y:"), self.new_y, None), 4, 1, 1, 3)
+        self.odd_note = label("", tone="muted")
+        grid.addWidget(self.odd_note, 5, 0, 1, 4)
+        x_label = QLabel("X:")
+        x_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        grid.addWidget(x_label, 1, 2, 2, 1)
+        self.new_x = spin_box(1, DECK_SIZE, 5)
+        grid.addWidget(self.new_x, 1, 3, 2, 1)
+        grid.setColumnStretch(0, 1)
+        grid.setColumnStretch(1, 1)
 
-        body = tb.Frame(frame)
-        body.pack(fill=tk.BOTH, expand=True, pady=6)
-        # Buttons and scrollbar are packed first so a narrow pane squeezes the list, not them.
-        buttons = tb.Frame(body)
-        buttons.pack(side=tk.RIGHT, fill=tk.Y, padx=(6, 0))
+        middle = QWidget()
+        mid = QHBoxLayout(middle)
+        mid.setContentsMargins(0, 4, 0, 4)
+        # Two columns so the card seen at a split stays visible in a narrow pane.
+        t = self.step_list = StepTree()
+        t.setColumnCount(2)
+        t.setHeaderLabels(["Shuffle", "Split" if self.splits_in_list else "You see"])
+        t.setRootIsDecorated(bool(self.groups))
+        if not self.groups:
+            t.setIndentation(0)
+        t.setSelectionMode(QAbstractItemView.ExtendedSelection if self.groups
+                           else QAbstractItemView.SingleSelection)
+        t.setExpandsOnDoubleClick(False)
+        t.setUniformRowHeights(True)
+        header = t.header()
+        header.setStretchLastSection(False)
+        header.setSectionResizeMode(0, QHeaderView.Stretch)
+        header.setSectionResizeMode(1, QHeaderView.Fixed)
+        header.resizeSection(1, 100 if self.splits_in_list else 72)
+        header.setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        t.itemSelectionChanged.connect(self._on_step_select)
+        t.on_delete = self._delete_step
+        mid.addWidget(t, 1)
+        buttons = QVBoxLayout()
+        buttons.setSpacing(4)
         for text, cmd in (("↑ Up", lambda: self._move_step(-1)),
                           ("↓ Down", lambda: self._move_step(1)),
                           ("Duplicate", self._duplicate_step),
                           ("Delete", self._delete_step),
                           ("Clear all", self.model.clear_steps),
                           *extra_buttons):
-            tb.Button(buttons, text=text, command=cmd).pack(fill=tk.X, pady=1)
-
-        # Two columns so the card seen at a split stays visible in a narrow pane.
-        self.step_list = tb.Treeview(body, columns=("step", "see"),
-                                     show="tree headings" if self.groups else "headings",
-                                     selectmode="extended" if self.groups else "browse", height=10)
-        self.step_list.column("#0", width=26, stretch=False)  # fold arrows of groups
-        self.step_list.heading("step", text="Shuffle", anchor=tk.W)
-        self.step_list.heading("see", text="Split" if self.splits_in_list else "You see",
-                               anchor=tk.CENTER)
-        self.step_list.column("step", width=250, stretch=True, anchor=tk.W)
-        self.step_list.column("see", width=96 if self.splits_in_list else 64, stretch=False,
-                              anchor=tk.CENTER)
-        sb = tb.Scrollbar(body, orient=tk.VERTICAL, command=self.step_list.yview)
-        sb.pack(side=tk.RIGHT, fill=tk.Y)
-        self.step_list.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        self.step_list.bind("<<TreeviewSelect>>", lambda e: self._on_step_select())
-        self.step_list.bind("<Delete>", lambda e: self._delete_step())
-        self.step_list.config(yscrollcommand=sb.set)
+            buttons.addWidget(button(text, cmd))
+        buttons.addStretch(1)
+        mid.addLayout(buttons)
+        body.addWidget(middle, 1)
 
         # Where each faro, cut or packet run splits the deck, once there is a deck to split.
-        self.split_label = tb.Label(frame, text="", font=MONO, justify=tk.LEFT, wraplength=320)
+        self.split_label = label("", mono=True, wrap=True)
         if not self.splits_in_list:
-            self.split_label.pack(anchor=tk.W, pady=(0, 6))
+            body.addWidget(self.split_label)
 
-        edit = tb.Frame(frame)
-        edit.pack(fill=tk.X)
-        tb.Label(edit, text="Selected step X:").pack(side=tk.LEFT)
-        self.edit_x_var = tk.StringVar()
-        self.edit_x = tb.Spinbox(edit, from_=1, to=DECK_SIZE, width=4,
-                                 textvariable=self.edit_x_var, command=self.commit_edit_x)
-        self.edit_x.pack(side=tk.LEFT, padx=4)
-        self.edit_x.bind("<Return>", lambda e: self.commit_edit_x())
-        self.edit_x.bind("<FocusOut>", lambda e: self.commit_edit_x())
-        tb.Label(edit, text="Y:").pack(side=tk.LEFT, padx=(8, 0))
-        self.edit_y_var = tk.StringVar()
-        self.edit_y = tb.Spinbox(edit, from_=1, to=DECK_SIZE, width=4,
-                                 textvariable=self.edit_y_var, command=self.commit_edit_y)
-        self.edit_y.pack(side=tk.LEFT, padx=4)
-        self.edit_y.bind("<Return>", lambda e: self.commit_edit_y())
-        self.edit_y.bind("<FocusOut>", lambda e: self.commit_edit_y())
-        self.seq_error = tb.Label(frame, text="", bootstyle="danger", wraplength=320)
-        self.seq_error.pack(anchor=tk.W, pady=(4, 0))
-        help_text = tb.Label(frame if controls is None else add, text=HELP_TEXT,
-                             style="Muted.TLabel", wraplength=260 if controls is None else 360)
+        self.edit_x = spin_box(0, 0, blank="–")
+        self.edit_x.valueChanged.connect(lambda _v: self.commit_edit_x())
+        self.edit_y = spin_box(0, 0, blank="–")
+        self.edit_y.valueChanged.connect(lambda _v: self.commit_edit_y())
+        body.addWidget(row(QLabel("Selected step X:"), self.edit_x, 8, QLabel("Y:"),
+                           self.edit_y, None))
+        self.seq_error = label("", tone="danger", wrap=True)
+        body.addWidget(self.seq_error)
+        help_text = label(HELP_TEXT, tone="muted", wrap=True)
         if controls is None:
-            help_text.pack(anchor=tk.W)
+            body.addWidget(help_text)
         else:  # the Shuffles tab has room to spare beside the taller tabs
-            help_text.grid(row=6, column=0, columnspan=4, sticky=tk.W, pady=(8, 0))
+            grid.addWidget(help_text, 6, 0, 1, 4)
+            grid.setRowStretch(7, 1)
 
     # --- events -----------------------------------------------------------------------------
 
     def partial_kind(self, out):
-        source, dest = PARTIAL_DIRECTIONS[self.partial_dir_var.get()]
+        source, dest = PARTIAL_DIRECTIONS[self.partial_dir.currentText()]
         return ops.partial_faro_kind(source, dest, out)
 
     # Rows are named "s<index>" for a step and "g<id>" for a group.
 
     def selected_step(self):
         """The selected step, when exactly one step (and no group) is selected."""
-        sel = self.step_list.selection()
+        sel = self.step_list.selected_ids()
         return int(sel[0][1:]) if len(sel) == 1 and sel[0].startswith("s") else None
 
     def selected_range(self):
         """(first, last) step covered by the selection (a group covers its steps), or None."""
-        spans = [self._group_rows.get(row) or (int(row[1:]),) * 2
-                 for row in self.step_list.selection()]
+        spans = [self._group_rows.get(r) or (int(r[1:]),) * 2
+                 for r in self.step_list.selected_ids()]
         if not spans:
             return None
         return min(a for a, _b in spans), max(b for _a, b in spans)
 
     def selected_group(self):
         """The id of the group row selected on its own, else None."""
-        sel = self.step_list.selection()
+        sel = self.step_list.selected_ids()
         return int(sel[0][1:]) if len(sel) == 1 and sel[0].startswith("g") else None
 
     def select_step(self, index):
         """Select step ``index`` (None clears the selection)."""
-        row = f"s{index}"
-        if index is not None and self.step_list.exists(row):
-            self._select_rows([row])
-        else:
-            self._select_rows([])
+        self.select_rows([] if index is None else [f"s{index}"])
 
     def select_range(self, first, last):
         """Select steps ``first``..``last``."""
-        self._select_rows([f"s{i}" for i in range(first, last + 1)
-                           if self.step_list.exists(f"s{i}")])
+        self.select_rows([f"s{i}" for i in range(first, last + 1)])
 
-    def _select_rows(self, rows):
-        self.step_list.selection_set(rows)
-        if rows:
-            self.step_list.focus(rows[0])
-            self.step_list.see(rows[0])
+    def select_rows(self, rows):
+        t = self.step_list
+        items = [item for item in (t.item_of(r) for r in rows) if item is not None]
+        t.blockSignals(True)
+        t.clearSelection()
+        for item in items:
+            item.setSelected(True)
+        if items:
+            t.setCurrentItem(items[0], 0, QItemSelectionModel.NoUpdate)
+            t.scrollToItem(items[0])
+        t.blockSignals(False)
+        t.viewport().update()
         self._on_step_select()
 
     def insert_index(self):
@@ -246,19 +301,19 @@ class SequencePanel:
         x = y = None
         n = self._new_deck_size()
         if kind in (ops.OUT_FARO, ops.IN_FARO) and n % 2:
-            self.seq_error.config(text=f"Can't add step: {n} cards; a full faro needs an even "
-                                       "number, so use a partial faro")
+            self.seq_error.setText(f"Can't add step: {n} cards; a full faro needs an even "
+                                   "number, so use a partial faro")
             return
         try:
             if kind in ops.KINDS_WITH_X:
-                x = int(self.new_x_var.get())
+                x = self.new_x.value()
                 if kind in ops.KINDS_WITH_Y:
-                    y = _optional_int(self.new_y_var.get())
+                    y = self.new_y.value() or None
                     y = None if y == x else y
             step = solver.Step(kind, x, y)
             step.validate(n)
         except (ValueError, TypeError) as exc:
-            self.seq_error.config(text=f"Can't add step: {exc}")
+            self.seq_error.setText(f"Can't add step: {exc}")
             return
         self.add(step)
 
@@ -270,9 +325,9 @@ class SequencePanel:
         try:
             self.model.add_step(step, index)
         except (ValueError, TypeError) as exc:
-            self.seq_error.config(text=f"Can't add step: {exc}")
+            self.seq_error.setText(f"Can't add step: {exc}")
             return False
-        self.seq_error.config(text="")
+        self.seq_error.setText("")
         self.select_step(index)
         return True
 
@@ -293,6 +348,21 @@ class SequencePanel:
             self.model.remove_step(sel)
             self.select_step(min(sel, len(self.model.steps) - 1))
 
+    @staticmethod
+    def _set_box(box, lo=None, hi=None, value=None, blank="–"):
+        """Show ``value`` in ``box`` with the range lo..hi; None for all three: blank and off."""
+        box.blockSignals(True)
+        if lo is None:
+            box.setSpecialValueText(blank)
+            box.setRange(0, 0)
+            box.setEnabled(False)
+        else:
+            box.setSpecialValueText("all" if lo == 0 else "")
+            box.setRange(lo, hi)
+            box.setValue(value)
+            box.setEnabled(True)
+        box.blockSignals(False)
+
     def _on_step_select(self):
         sel = self.selected_step()
         step = self.model.steps[sel] if sel is not None else None
@@ -300,17 +370,13 @@ class SequencePanel:
             states = self.get_states()
             deck = states[sel] if states and sel < len(states) else None
             lo, hi = ops.x_bounds(step.kind, DECK_SIZE if deck is None else len(deck))
-            self.edit_x.configure(state=tk.NORMAL, from_=lo, to=hi)
-            self.edit_x_var.set(str(step.x))
+            self._set_box(self.edit_x, lo, max(hi, lo), step.x)
         else:
-            self.edit_x_var.set("")
-            self.edit_x.configure(state=tk.DISABLED)
+            self._set_box(self.edit_x)
         if step is not None and step.kind in ops.KINDS_WITH_Y:
-            self.edit_y.configure(state=tk.NORMAL, from_=1, to=step.x)
-            self.edit_y_var.set("" if step.y is None else str(step.y))
+            self._set_box(self.edit_y, 0, step.x, step.y or 0)  # 0 shows as "all"
         else:
-            self.edit_y_var.set("")
-            self.edit_y.configure(state=tk.DISABLED)
+            self._set_box(self.edit_y)
         self.update_add_buttons()
         if self.on_select is not None:
             self.on_select(sel)
@@ -318,33 +384,36 @@ class SequencePanel:
     def update_add_buttons(self):
         """Allow full faros only on an even deck, and X only up to the deck's size."""
         n = self._new_deck_size()
-        self.new_x.configure(to=max(n, 1))
-        for button in self.faro_buttons:
-            button.configure(state=tk.DISABLED if n % 2 else tk.NORMAL)
-        self.odd_note.config(text=f"Odd number of cards ({n}): partial faros only."
-                             if n % 2 else "")
+        self.new_x.setMaximum(max(n, 1))
+        for b in self.faro_buttons:
+            b.setEnabled(not n % 2)
+        self.odd_note.setText(f"Odd number of cards ({n}): partial faros only."
+                              if n % 2 else "")
 
-    def commit_edit_x(self):
+    def commit_edit_x(self, value=None):
+        """Give the selected step the X in the box (or ``value``)."""
         sel = self.selected_step()
         if sel is None or self.model.steps[sel].kind not in ops.KINDS_WITH_X:
             return
         try:
-            self.model.set_step_x(sel, int(self.edit_x_var.get()))
-            self.seq_error.config(text="")
+            self.model.set_step_x(sel, self.edit_x.value() if value is None else value)
+            self.seq_error.setText("")
         except (ValueError, TypeError) as exc:
-            self.seq_error.config(text=f"Invalid X: {exc}")
+            self.seq_error.setText(f"Invalid X: {exc}")
             return
         self.select_step(sel)
 
-    def commit_edit_y(self):
+    def commit_edit_y(self, value=None):
+        """Give the selected step the Y in the box (or ``value``; 0 or None: all)."""
         sel = self.selected_step()
         if sel is None or self.model.steps[sel].kind not in ops.KINDS_WITH_Y:
             return
+        y = self.edit_y.value() if value is None else value
         try:
-            self.model.set_step_y(sel, _optional_int(self.edit_y_var.get()))
-            self.seq_error.config(text="")
+            self.model.set_step_y(sel, y or None)
+            self.seq_error.setText("")
         except (ValueError, TypeError) as exc:
-            self.seq_error.config(text=f"Invalid Y: {exc}")
+            self.seq_error.setText(f"Invalid Y: {exc}")
             return
         self.select_step(sel)
 
@@ -354,26 +423,32 @@ class SequencePanel:
         """Redraw the step list from the model, keeping the selected rows."""
         steps, states = self.model.steps, self.get_states()
         t = self.step_list
-        keep = t.selection()
-        closed = {row for row in self._group_rows
-                  if t.exists(row) and not t.item(row, "open")}
-        t.delete(*t.get_children())
+        keep = t.selected_ids()
+        closed = {r for r in self._group_rows
+                  if (item := t.item_of(r)) is not None and not item.isExpanded()}
+        t.blockSignals(True)
+        t.clear()
         starts = {g.first: g for g in self.groups()} if self.groups else {}
         self._group_rows = {}
-        group = None  # the group the steps are being added under
+        group = parent = None  # the group the steps are being added under, and its row
         problem = None
+        bold = QFont(t.font())
+        bold.setBold(True)
+        folds = []
         for k, step in enumerate(steps, 1):
             if k - 1 in starts:
                 group = starts[k - 1]
-                row = f"g{group.id}"
-                self._group_rows[row] = (group.first, group.last)
-                span = f"#{group.first + 1}" + (f"\u2013#{group.last + 1}"
+                gid = f"g{group.id}"
+                self._group_rows[gid] = (group.first, group.last)
+                span = f"#{group.first + 1}" + (f"–#{group.last + 1}"
                                                 if group.last > group.first else "")
-                t.insert("", tk.END, iid=row, open=row not in closed, tags=(row,),
-                         values=(f"{group.title}   ({span})", ""))
-                t.tag_configure(row, background=theme.tint(group.color, 0.55),
-                                font=("TkDefaultFont", 9, "bold"))
-                t.tag_configure(f"in{group.id}", background=theme.tint(group.color, 0.2))
+                parent = QTreeWidgetItem([f"{group.title}   ({span})", ""])
+                parent.setData(0, ROW_ID, gid)
+                for col in (0, 1):
+                    parent.setBackground(col, QBrush(theme.tint(group.color, 0.55)))
+                    parent.setFont(col, bold)
+                t.addTopLevelItem(parent)
+                folds.append((parent, gid not in closed))
             before = states[k - 1] if states and k - 1 < len(states) else None
             cards = split_cards(step, before) if before is not None else None
             note = self.row_problem(k - 1)
@@ -384,25 +459,29 @@ class SequencePanel:
             if cards:
                 see = (f"{cards[0].pretty()} | {cards[1].pretty()}" if self.splits_in_list
                        else cards[0].pretty())
-            t.insert(f"g{group.id}" if inside else "", tk.END, iid=f"s{k - 1}",
-                     tags=(f"in{group.id}",) if inside else (), values=(
-                         f"{'⚠ ' if note else ''}{k}. {step.label()}", see))
+            item = QTreeWidgetItem([f"{'⚠ ' if note else ''}{k}. {step.label()}", see])
+            item.setData(0, ROW_ID, f"s{k - 1}")
+            item.setTextAlignment(1, Qt.AlignCenter)
+            if inside:
+                for col in (0, 1):
+                    item.setBackground(col, QBrush(theme.tint(group.color, 0.2)))
+                parent.addChild(item)
+            else:
+                t.addTopLevelItem(item)
             if inside and k - 1 == group.last:
                 group = None
-        self.split_label.config(text=format_splits(steps, states) if states else "")
+        for item, is_open in folds:
+            item.setExpanded(is_open)
+        self.split_label.setText(format_splits(steps, states) if states else "")
         if problem is not None:
-            self.seq_error.config(text=problem)
+            self.seq_error.setText(problem)
         elif self._problem_shown:
-            self.seq_error.config(text="")
+            self.seq_error.setText("")
         self._problem_shown = problem is not None
-        keep = [row for row in keep if t.exists(row)]
-        t.selection_set(keep)
-        if keep:
-            t.focus(keep[0])
+        items = [item for item in (t.item_of(r) for r in keep) if item is not None]
+        for item in items:
+            item.setSelected(True)
+        if items:
+            t.setCurrentItem(items[0], 0, QItemSelectionModel.NoUpdate)
+        t.blockSignals(False)
         self._on_step_select()
-
-
-def _optional_int(text):
-    """A spinbox's number, or None when it is left blank."""
-    text = text.strip()
-    return int(text) if text else None

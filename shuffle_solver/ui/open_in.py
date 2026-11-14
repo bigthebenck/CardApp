@@ -6,10 +6,10 @@ fresh tab of another kind. ``OpenInTabButton`` lists the places a deck can go
 tab; this module knows nothing about the tabs themselves.
 """
 
-import tkinter as tk
-from tkinter import messagebox
+from PySide6.QtWidgets import QMenu
 
-import ttkbootstrap as tb
+from . import dialogs
+from .widgets import button
 
 TITLE = "Open in new tab"
 TARGETS = {  # key -> menu label, in menu order
@@ -26,17 +26,19 @@ class OpenInTabButton:
 
     ``get_cards()`` returns the deck (or raises ValueError saying why there is
     none); ``open_in(target, cards)`` opens the tab, ``target`` being a key of
-    ``TARGETS``. ``button`` is packed by the caller; ``text`` is a shorter label
+    ``TARGETS``. ``button`` is placed by the caller; ``text`` is a shorter label
     for a row with little room.
     """
 
     def __init__(self, parent, get_cards, open_in, text=TITLE):
         self.get_cards, self.open_in = get_cards, open_in
-        self.button = tb.Menubutton(parent, text=text, bootstyle="secondary-outline")
-        self.menu = tb.Menu(self.button, tearoff=False)
+        self.button = button(text)
+        self.button.setParent(parent)
+        self.button.setProperty("menu", True)
+        self.menu = QMenu(self.button)
         for target, label in TARGETS.items():
-            self.menu.add_command(label=label, command=lambda t=target: self.open(t))
-        self.button.config(menu=self.menu)
+            self.menu.addAction(label, lambda t=target: self.open(t))
+        self.button.setMenu(self.menu)
 
     def open(self, target):
         """Open the deck in a new tab; returns the tab's content, or None if it couldn't."""
@@ -45,7 +47,6 @@ class OpenInTabButton:
             if not cards:
                 raise ValueError("there are no cards to open")
         except ValueError as exc:
-            messagebox.showerror(TITLE, f"Can't open this in a new tab: {exc}",
-                                 parent=self.button)
+            dialogs.error(self.button, TITLE, f"Can't open this in a new tab: {exc}")
             return None
         return self.open_in(target, cards)

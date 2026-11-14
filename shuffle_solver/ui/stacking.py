@@ -7,16 +7,17 @@ All state lives in ``StackingModel``; this module only draws it and forwards
 user input.
 """
 
-import tkinter as tk
-
-import ttkbootstrap as tb
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import (QButtonGroup, QCheckBox, QGridLayout, QLabel, QLineEdit,
+                               QRadioButton, QSplitter, QWidget)
 
 from .. import stacking
 from .card_viewer import CardViewers
 from .model import StackingModel
 from .open_in import OpenInTabButton
-
-MONO = ("Courier", 10)
+from .sequence_panel import spin_box
+from .widgets import Panel, button, column, copy, label, mono_font, row, set_text, set_tone, \
+    text_box
 
 
 class StackingTab:
@@ -27,127 +28,124 @@ class StackingTab:
         self.use_as_final = use_as_final
         self.open_in = open_in
         self._shown_hands = None  # the hands the rows were last built for
-        self.hand_vars = {}
+        self.hand_edits = {}
         self.hand_errors = {}
 
-        self.frame = tb.Panedwindow(parent, orient=tk.HORIZONTAL)
+        self.frame = QSplitter(Qt.Horizontal, parent)
+        self.frame.setChildrenCollapsible(False)
         self.viewers = CardViewers(self.frame)
-        left = tb.Frame(self.frame)
-        self._build_deal(left)
-        self._build_hands(left)
-        self.frame.add(left, weight=1)
-        self.frame.add(self._build_result(self.frame), weight=1)
+        left, left_layout = column(spacing=10)
+        self._build_deal(left_layout)
+        self._build_hands(left_layout)
+        self.frame.addWidget(left)
+        self.frame.addWidget(self._build_result())
+        self.frame.setStretchFactor(0, 1)
+        self.frame.setStretchFactor(1, 1)
 
         self.model.subscribe(lambda _m: self.refresh())
         self.refresh()
 
     # --- setup ----------------------------------------------------------------------
 
-    def _build_deal(self, parent):
-        frame = tb.LabelFrame(parent, text="1. The deal", padding=6)
-        frame.pack(fill=tk.X)
+    def _build_deal(self, parent_layout):
+        frame = Panel("1. The deal")
+        parent_layout.addWidget(frame)
+        body = frame.body
 
-        row = tb.Frame(frame)
-        row.pack(fill=tk.X)
-        tb.Label(row, text="Game:").pack(side=tk.LEFT)
-        self.game_var = tk.StringVar(value=self.model.game)
-        for game, label in stacking.GAMES.items():
-            tb.Radiobutton(row, text=label, value=game, variable=self.game_var,
-                           command=lambda: self.model.set_game(self.game_var.get())).pack(
-                side=tk.LEFT, padx=(8, 0))
+        self.game_buttons = {}
+        self.game_group = QButtonGroup(frame)
+        radios = [QLabel("Game:")]
+        for game, text in stacking.GAMES.items():
+            radio = QRadioButton(text)
+            radio.toggled.connect(lambda on, g=game: on and self.model.set_game(g))
+            self.game_group.addButton(radio)
+            self.game_buttons[game] = radio
+            radios.append(radio)
+        body.addWidget(row(*radios, None, spacing=12))
 
-        row = tb.Frame(frame)
-        row.pack(fill=tk.X, pady=(6, 0))
-        tb.Label(row, text="Players:").pack(side=tk.LEFT)
-        self.players_var = tk.StringVar(value=str(self.model.players))
-        self.players_box = tb.Spinbox(row, from_=stacking.MIN_PLAYERS, to=stacking.MAX_PLAYERS,
-                                      width=4, textvariable=self.players_var,
-                                      command=self.apply_players)
-        self.players_box.pack(side=tk.LEFT, padx=4)
-        for seq in ("<Return>", "<FocusOut>"):
-            self.players_box.bind(seq, lambda e: self.apply_players())
-        self.burns_var = tk.BooleanVar(value=self.model.burns)
-        self.burns_check = tb.Checkbutton(
-            row, text="Burn a card before the flop, turn and river", variable=self.burns_var,
-            command=lambda: self.model.set_burns(self.burns_var.get()))
-        self.burns_check.pack(side=tk.LEFT, padx=(16, 0))
-        self.players_error = tb.Label(frame, text="", bootstyle="danger")
-        self.players_error.pack(anchor=tk.W)
-        tb.Label(frame, text="Player 1 sits on the dealer's left and gets the first card; "
-                             "the last player is the dealer.",
-                 style="Muted.TLabel").pack(anchor=tk.W)
+        self.players_box = spin_box(stacking.MIN_PLAYERS, stacking.MAX_PLAYERS,
+                                    self.model.players)
+        self.players_box.valueChanged.connect(lambda _v: self.apply_players())
+        self.burns_check = QCheckBox("Burn a card before the flop, turn and river")
+        self.burns_check.toggled.connect(self.model.set_burns)
+        body.addWidget(row(QLabel("Players:"), self.players_box, 16, self.burns_check, None))
+        self.players_error = label("", tone="danger")
+        body.addWidget(self.players_error)
+        body.addWidget(label("Player 1 sits on the dealer's left and gets the first card; "
+                             "the last player is the dealer.", tone="muted", wrap=True))
 
-    def _build_hands(self, parent):
-        frame = tb.LabelFrame(parent, text="2. Cards wanted", padding=6)
-        frame.pack(fill=tk.BOTH, expand=True, pady=(6, 0))
-        head = tb.Frame(frame)
-        head.pack(fill=tk.X)
-        tb.Label(head, text="Shorthand, e.g.  AS, KH.  X or a short hand = any card there.",
-                 style="Muted.TLabel").pack(side=tk.LEFT)
-        tb.Button(head, text="Clear all", bootstyle="secondary",
-                  command=self.model.clear).pack(side=tk.RIGHT)
-        self.hands_frame = tb.Frame(frame)
-        self.hands_frame.pack(fill=tk.X, pady=(6, 0))
-        self.hands_frame.columnconfigure(1, weight=1)
+    def _build_hands(self, parent_layout):
+        frame = Panel("2. Cards wanted")
+        parent_layout.addWidget(frame, 1)
+        body = frame.body
+        body.addWidget(row(label("Shorthand, e.g.  AS, KH.  X or a short hand = any card there.",
+                                 tone="muted", wrap=True), None,
+                           button("Clear all", self.model.clear)))
+        self._hands_host = body
+        self.hands_frame = QWidget()
+        body.addWidget(self.hands_frame)
+        body.addStretch(1)
 
-    def _build_result(self, parent):
-        frame = tb.LabelFrame(parent, text="3. Starting order (top first)", padding=6)
-        self.summary = tb.Label(frame, text="", wraplength=440, justify=tk.LEFT)
-        self.summary.pack(anchor=tk.W, fill=tk.X)
-        self.stack_text = tb.Text(frame, height=20, width=36, font=MONO, state=tk.DISABLED)
-        self.stack_text.pack(fill=tk.BOTH, expand=True, pady=6)
-        self.fill_var = tk.BooleanVar(value=self.model.fill)
-        tb.Checkbutton(frame, text="Fill the other positions with the unused cards "
-                                   "(new deck order) instead of X",
-                       variable=self.fill_var,
-                       command=lambda: self.model.set_fill(self.fill_var.get())).pack(
-            anchor=tk.W)
+    def _build_result(self):
+        frame = Panel("3. Starting order (top first)")
+        body = frame.body
+        self.summary = label("", wrap=True)
+        body.addWidget(self.summary)
+        self.stack_text = text_box(read_only=True)
+        body.addWidget(self.stack_text, 1)
+        self.fill_check = QCheckBox("Fill the other positions with the unused cards "
+                                    "(new deck order) instead of X")
+        self.fill_check.toggled.connect(self.model.set_fill)
+        body.addWidget(self.fill_check)
 
-        btns = tb.Frame(frame)
-        btns.pack(fill=tk.X, pady=(6, 0))
-        tb.Button(btns, text="Copy shorthand",
-                  command=lambda: self._copy(self.model.shorthand())).pack(side=tk.LEFT)
-        tb.Button(btns, text="Copy list",
-                  command=lambda: self._copy(self.model.numbered())).pack(side=tk.LEFT, padx=4)
-        tb.Button(btns, text="View cards", command=self.view_cards).pack(side=tk.LEFT)
+        buttons = [button("Copy shorthand", lambda: copy(self.model.shorthand())),
+                   button("Copy list", lambda: copy(self.model.numbered())),
+                   button("View cards", self.view_cards), None]
         if self.use_as_final is not None:
-            self.final_button = tb.Button(btns, text="Use as final deck →",
-                                          command=self.send_to_final)
-            self.final_button.pack(side=tk.RIGHT)
+            self.final_button = button("Use as final deck →", self.send_to_final, kind="primary")
+            buttons.append(self.final_button)
+        body.addWidget(row(*buttons))
         if self.open_in is not None:
             self.open_button = OpenInTabButton(frame, self._stack_cards, self.open_in)
-            self.open_button.button.pack(anchor=tk.E, pady=(4, 0))
+            body.addWidget(self.open_button.button, 0, Qt.AlignRight)
         return frame
 
     def _build_hand_rows(self):
-        for child in self.hands_frame.winfo_children():
-            child.destroy()
-        self.hand_vars, self.hand_errors = {}, {}
-        row = 0
+        old = self.hands_frame
+        self.hands_frame = QWidget()
+        self._hands_host.replaceWidget(old, self.hands_frame)
+        old.deleteLater()
+        grid = QGridLayout(self.hands_frame)
+        grid.setContentsMargins(0, 4, 0, 0)
+        grid.setHorizontalSpacing(8)
+        grid.setVerticalSpacing(2)
+        grid.setColumnStretch(1, 1)
+        self.hand_edits, self.hand_errors = {}, {}
+        r = 0
         for name, size in self.model.hands():
             text = f"{self.model.hand_label(name)} ({size} card{'s' if size != 1 else ''})"
-            tb.Label(self.hands_frame, text=text).grid(row=row, column=0, sticky=tk.W,
-                                                       padx=(0, 8), pady=(2, 0))
-            var = tk.StringVar(value=self.model.texts.get(name, ""))
-            tb.Entry(self.hands_frame, textvariable=var, font=MONO).grid(
-                row=row, column=1, sticky=tk.EW, pady=(2, 0))
-            var.trace_add("write", lambda *_a, n=name, v=var: self.model.set_hand_text(
-                n, v.get()))
-            error = tb.Label(self.hands_frame, text="", bootstyle="danger")
-            error.grid(row=row + 1, column=1, sticky=tk.W)
-            self.hand_vars[name], self.hand_errors[name] = var, error
-            row += 2
+            grid.addWidget(QLabel(text), r, 0)
+            edit = QLineEdit(self.model.texts.get(name, ""))
+            edit.setFont(mono_font())
+            edit.textChanged.connect(lambda t, n=name: self.model.set_hand_text(n, t))
+            grid.addWidget(edit, r, 1)
+            error = label("", tone="danger")
+            error.hide()
+            grid.addWidget(error, r + 1, 1)
+            self.hand_edits[name], self.hand_errors[name] = edit, error
+            r += 2
 
     # --- events --------------------------------------------------------------------------
 
-    def apply_players(self):
+    def apply_players(self, players=None):
+        """Deal to the players in the box (or ``players``); False if that's not allowed."""
         try:
-            self.model.set_players(int(self.players_var.get()))
+            self.model.set_players(self.players_box.value() if players is None else players)
         except ValueError:
-            self.players_error.config(text=f"⚠ pick {stacking.MIN_PLAYERS} to "
-                                           f"{stacking.MAX_PLAYERS} players")
+            self.players_error.setText(f"⚠ pick {stacking.MIN_PLAYERS} to "
+                                       f"{stacking.MAX_PLAYERS} players")
             return False
-        self.players_error.config(text="")
+        self.players_error.setText("")
         return True
 
     def view_cards(self):
@@ -163,12 +161,6 @@ class StackingTab:
             raise ValueError(self.model.problem)
         return list(self.model.stack)
 
-    def _copy(self, text):
-        if not text:
-            return
-        self.frame.clipboard_clear()
-        self.frame.clipboard_append(text)
-
     # --- refresh from model -------------------------------------------------------------
 
     def refresh(self):
@@ -177,31 +169,37 @@ class StackingTab:
         if hands != self._shown_hands:
             self._shown_hands = hands
             self._build_hand_rows()
-        for name, var in self.hand_vars.items():
-            if var.get() != m.texts.get(name, ""):  # e.g. after Clear all
-                var.set(m.texts.get(name, ""))
+        for name, edit in self.hand_edits.items():
+            if edit.text() != m.texts.get(name, ""):  # e.g. after Clear all
+                edit.blockSignals(True)
+                edit.setText(m.texts.get(name, ""))
+                edit.blockSignals(False)
             error = m.errors.get(name)
-            label = self.hand_errors[name]
-            if error:
-                label.config(text=f"⚠ {error}")
-                label.grid()
-            else:
-                label.grid_remove()
+            shown = self.hand_errors[name]
+            shown.setText(f"⚠ {error}" if error else "")
+            shown.setVisible(bool(error))
 
-        self.game_var.set(m.game)
-        self.players_var.set(str(m.players))
-        self.burns_var.set(m.burns)
-        self.burns_check.config(state=tk.NORMAL if m.game == stacking.HOLDEM else tk.DISABLED)
-        self.fill_var.set(m.fill)
+        for game, radio in self.game_buttons.items():
+            if radio.isChecked() != (game == m.game):
+                radio.blockSignals(True)
+                radio.setChecked(game == m.game)
+                radio.blockSignals(False)
+        self.players_box.blockSignals(True)
+        self.players_box.setValue(m.players)
+        self.players_box.blockSignals(False)
+        for check, on in ((self.burns_check, m.burns), (self.fill_check, m.fill)):
+            check.blockSignals(True)
+            check.setChecked(on)
+            check.blockSignals(False)
+        self.burns_check.setEnabled(m.game == stacking.HOLDEM)
 
         if m.stack is not None:
-            self.summary.config(text=m.summary(), style="TLabel")
+            self.summary.setText(m.summary())
+            set_tone(self.summary, None)
         else:
-            self.summary.config(text=f"⚠ {m.problem}", bootstyle="danger")
-        self.stack_text.config(state=tk.NORMAL)
-        self.stack_text.delete("1.0", tk.END)
-        self.stack_text.insert("1.0", m.numbered())
-        self.stack_text.config(state=tk.DISABLED)
+            self.summary.setText(f"⚠ {m.problem}")
+            set_tone(self.summary, "danger")
+        set_text(self.stack_text, m.numbered())
         if self.use_as_final is not None:
-            self.final_button.config(state=tk.NORMAL if m.stack is not None else tk.DISABLED)
+            self.final_button.setEnabled(m.stack is not None)
         self.viewers.refresh()

@@ -3,7 +3,7 @@
 Holds the 52 final-deck slots and the ordered shuffle steps, and recomputes
 the result on every change so a stale answer is never kept around. It talks
 to ``deck`` and ``solver`` through plain data only; there is no shuffle math
-here and no Tk, so it is unit-tested directly.
+here and no Qt, so it is unit-tested directly.
 """
 
 import json

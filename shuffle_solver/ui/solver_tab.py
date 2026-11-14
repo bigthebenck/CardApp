@@ -5,28 +5,29 @@ shows the order to set it up in. All state lives in ``AppModel``; this module
 only draws it and forwards user edits. It contains no shuffle math.
 """
 
-import tkinter as tk
-from tkinter import filedialog, messagebox
-
-import ttkbootstrap as tb
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog, QGridLayout,
+                               QHBoxLayout, QLabel, QPlainTextEdit, QSplitter, QVBoxLayout,
+                               QWidget)
 
 from .. import deck
 from .. import shuffle_ops as ops
+from . import dialogs
 from .card_viewer import CardViewers
 from .model import DECK_SIZE, AppModel, format_instructions, format_preview
 from .open_in import OpenInTabButton
 from .presets import PresetBar, PresetStore
 from .sequence_panel import SequencePanel
+from .widgets import (Debounce, Panel, button, copy, label, mono_font, row, set_text, set_tone,
+                      text_box)
 
-TEXT_DEBOUNCE_MS = 400
 GRID_ROWS = 13
-MONO = ("Courier", 10)
 
 ALL_CARD_LABELS = [deck.Card(r, s).pretty() for s in deck.SUITS for r in deck.RANKS]
 INDIFFERENT_LABELS = [deck.indifferent_card(rank=r).pretty()
                       for r in deck.INDIFFERENT_RANKS]
 
-BADGES = {  # status -> (text, bootstyle)
+BADGES = {  # status -> (text, tone)
     "ok": ("PASS", "success"),
     "empty_sequence": ("PASS", "success"),
     "failed": ("FAIL", "danger"),
@@ -40,9 +41,43 @@ def write_file(parent, title, path, write):
     try:
         write()
     except OSError as exc:
-        messagebox.showerror(title, f"Could not save {path}:\n{exc}", parent=parent)
+        dialogs.error(parent, title, f"Could not save {path}:\n{exc}")
     else:
-        messagebox.showinfo(title, f"Saved to {path}", parent=parent)
+        dialogs.info(parent, title, f"Saved to {path}")
+
+
+class SlotBox(QComboBox):
+    """One slot of the final deck: type a card, or pick one not placed elsewhere."""
+
+    def __init__(self, fill_choices, commit):
+        super().__init__()
+        self.setEditable(True)
+        self.setInsertPolicy(QComboBox.NoInsert)
+        self.setFont(mono_font())
+        self.setMinimumContentsLength(4)
+        self.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self._fill = fill_choices
+        self.activated.connect(lambda _i: commit())
+        self.lineEdit().editingFinished.connect(commit)
+
+    def showPopup(self):
+        text = self.currentText()
+        self.blockSignals(True)
+        self.clear()
+        self.addItems(self._fill())
+        self.setCurrentIndex(-1)
+        self.setEditText(text)
+        self.blockSignals(False)
+        super().showPopup()
+
+    def text(self):
+        return self.currentText()
+
+    def set_text(self, text):
+        if self.currentText() != text:
+            self.blockSignals(True)
+            self.setEditText(text)
+            self.blockSignals(False)
 
 
 class SolverTab:
@@ -51,119 +86,105 @@ class SolverTab:
         self.model = model or AppModel()
         self.presets = presets or PresetStore()
         self.open_in = open_in
-        self._text_job = None
         self._syncing_text = False
         self._text_is_source = False
         self._text_slots = None  # slots the shorthand box last described
 
-        self.frame = tb.Panedwindow(parent, orient=tk.HORIZONTAL)
+        self.frame = QSplitter(Qt.Horizontal, parent)
+        self.frame.setChildrenCollapsible(False)
+        self._text_job = Debounce(self.frame, self.apply_text)
         self.viewers = CardViewers(self.frame)
-        self.frame.add(self._build_final_panel(self.frame), weight=2)
-        self.sequence = SequencePanel(self.frame, self.model,
-                                      "2. Shuffle sequence (first → last)", self._states)
-        self.frame.add(self.sequence.frame, weight=1)
-        self.frame.add(self._build_result_panel(self.frame), weight=2)
+        self.frame.addWidget(self._build_final_panel())
+        self.sequence = SequencePanel(None, self.model, "2. Shuffle sequence (first → last)",
+                                      self._states)
+        self.frame.addWidget(self.sequence.frame)
+        self.frame.addWidget(self._build_result_panel())
+        for i, weight in enumerate((2, 1, 2)):
+            self.frame.setStretchFactor(i, weight)
 
         self.model.subscribe(lambda _m: self.refresh())
         self.refresh()
 
     def close(self):
         """Stop pending work before the tab's widgets go away."""
-        if self._text_job is not None:
-            self.frame.after_cancel(self._text_job)
-            self._text_job = None
+        self._text_job.stop()
+        self.preset_bar.dispose()
 
     # --- setup ----------------------------------------------------------------------
 
-    def _build_final_panel(self, parent):
-        frame = tb.LabelFrame(parent, text="1. Final deck (desired order, top first)", padding=6)
+    def _build_final_panel(self):
+        frame = Panel("1. Final deck (desired order, top first)")
+        body = frame.body
 
         self.preset_bar = PresetBar(frame, self.presets, self._preset_cards,
                                     self.model.set_final_cards)
-        self.preset_bar.frame.pack(fill=tk.X)
-        self.preset_var = self.preset_bar.var
-        tb.Button(self.preset_bar.frame, text="Clear", command=self.model.clear_final).pack(
-            side=tk.RIGHT)
+        self.preset_bar.add_right(button("Clear", self.model.clear_final))
+        body.addWidget(self.preset_bar.frame)
 
-        label_row = tb.Frame(frame)
-        label_row.pack(fill=tk.X, pady=(6, 0))
-        tb.Label(label_row, text="Shorthand (e.g.  A-KH, (A-8, 9-K)`C, K-AD, ACHSD):").pack(
-            side=tk.LEFT)
-        tb.Button(label_row, text="View cards", command=self.view_final_cards).pack(
-            side=tk.RIGHT)
-        self.final_text = tb.Text(frame, height=4, width=44, wrap=tk.WORD, font=MONO, undo=True)
-        self.final_text.pack(fill=tk.X)
-        self.final_text.bind("<<Modified>>", self._on_text_modified)
+        body.addWidget(row(QLabel("Shorthand (e.g.  A-KH, (A-8, 9-K)`C, K-AD, ACHSD):"), None,
+                           button("View cards", self.view_final_cards)))
+        self.final_text = text_box(lines=4)
+        self.final_text.textChanged.connect(self._on_text_modified)
+        body.addWidget(self.final_text)
         if self.open_in is not None:
             self.open_final = OpenInTabButton(frame, self._preset_cards, self.open_in)
-            self.open_final.button.pack(anchor=tk.E, pady=(4, 0))
-        self.text_error = tb.Label(frame, text="", bootstyle="danger", wraplength=420)
-        self.text_error.pack(anchor=tk.W)
+            body.addWidget(self.open_final.button, 0, Qt.AlignRight)
+        self.text_error = label("", tone="danger", wrap=True)
+        body.addWidget(self.text_error)
 
-        grid = tb.Frame(frame)
-        grid.pack(anchor=tk.W, pady=(4, 0))
+        grid_widget = QWidget()
+        grid = QGridLayout(grid_widget)
+        grid.setContentsMargins(0, 2, 0, 0)
+        grid.setHorizontalSpacing(4)
+        grid.setVerticalSpacing(2)
         self.slot_boxes = []
-        self.slot_vars = []
         for i in range(DECK_SIZE):
-            row, col = i % GRID_ROWS, (i // GRID_ROWS) * 2
-            tb.Label(grid, text=f"{i + 1:>2}", font=MONO).grid(row=row, column=col, sticky=tk.E,
-                                                                 padx=(6, 2))
-            var = tk.StringVar()
-            box = tb.Combobox(grid, textvariable=var, width=6, font=MONO,
-                              postcommand=lambda i=i: self._fill_slot_choices(i))
-            box.grid(row=row, column=col + 1, pady=1, sticky=tk.W)
-            for seq in ("<<ComboboxSelected>>", "<Return>", "<FocusOut>"):
-                box.bind(seq, lambda e, i=i: self._commit_slot(i))
+            r, col = i % GRID_ROWS, (i // GRID_ROWS) * 2
+            number = label(f"{i + 1:>2}", tone="muted", mono=True)
+            number.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            grid.addWidget(number, r, col)
+            box = SlotBox(lambda i=i: self._slot_choices(i), lambda i=i: self._commit_slot(i))
+            grid.addWidget(box, r, col + 1)
             self.slot_boxes.append(box)
-            self.slot_vars.append(var)
+        for c in range(1, 8, 2):
+            grid.setColumnStretch(c, 1)
+        body.addWidget(grid_widget)
 
-        self.deck_status = tb.Label(frame, text="", wraplength=420, justify=tk.LEFT)
-        self.deck_status.pack(anchor=tk.W, pady=(6, 0))
+        self.deck_status = label("", wrap=True)
+        body.addWidget(self.deck_status)
+        body.addStretch(1)
         return frame
 
-    def _build_result_panel(self, parent):
-        frame = tb.LabelFrame(parent, text="3. Starting order (set up like this)",
-                              padding=6)
+    def _build_result_panel(self):
+        frame = Panel("3. Starting order (set up like this)")
+        body = frame.body
 
-        head = tb.Frame(frame)
-        head.pack(fill=tk.X)
-        self.badge = tb.Label(head, text="", font=("TkDefaultFont", 11, "bold"),
-                              padding=(10, 2))
-        self.badge.pack(side=tk.LEFT)
-        self.result_msg = tb.Label(head, text="", wraplength=360, justify=tk.LEFT)
-        self.result_msg.pack(side=tk.LEFT, padx=8, fill=tk.X, expand=True)
+        self.badge = label("", role="badge")
+        self.result_msg = label("", wrap=True)
+        head = QWidget()
+        h = QHBoxLayout(head)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.addWidget(self.badge, 0, Qt.AlignTop)
+        h.addWidget(self.result_msg, 1)
+        body.addWidget(head)
 
-        self.start_text = tb.Text(frame, height=18, width=34, font=MONO, state=tk.DISABLED)
-        self.start_text.pack(fill=tk.BOTH, expand=True, pady=6)
+        self.start_text = text_box(read_only=True)
+        body.addWidget(self.start_text, 2)
 
-        btns = tb.Frame(frame)
-        btns.pack(fill=tk.X)
-        tb.Button(btns, text="Copy shorthand",
-                  command=lambda: self._copy(self._start_shorthand())).pack(side=tk.LEFT)
-        tb.Button(btns, text="Copy list",
-                  command=lambda: self._copy(self._start_numbered())).pack(side=tk.LEFT, padx=4)
-        tb.Button(btns, text="Export…", command=self.export_start).pack(side=tk.LEFT)
-        tb.Button(btns, text="View cards", command=self.view_start_cards).pack(side=tk.RIGHT)
+        body.addWidget(row(button("Copy shorthand", lambda: copy(self._start_shorthand())),
+                           button("Copy list", lambda: copy(self._start_numbered())),
+                           button("Export…", self.export_start), None,
+                           button("View cards", self.view_start_cards)))
         if self.open_in is not None:
             self.open_start = OpenInTabButton(frame, self._verified_start, self.open_in)
-            self.open_start.button.pack(anchor=tk.E, pady=(4, 0))
+            body.addWidget(self.open_start.button, 0, Qt.AlignRight)
 
-        self.preview_var = tk.BooleanVar(value=False)
-        tb.Checkbutton(frame, text="Show step-by-step preview", variable=self.preview_var,
-                       command=self._toggle_preview).pack(anchor=tk.W, pady=(6, 0))
-        self.preview_frame = tb.Frame(frame)
-        self.preview_text = tb.Text(self.preview_frame, height=14, font=MONO, wrap=tk.NONE,
-                                    state=tk.DISABLED)
-        xs = tb.Scrollbar(self.preview_frame, orient=tk.HORIZONTAL,
-                          command=self.preview_text.xview)
-        ys = tb.Scrollbar(self.preview_frame, orient=tk.VERTICAL,
-                          command=self.preview_text.yview)
-        self.preview_text.config(xscrollcommand=xs.set, yscrollcommand=ys.set)
-        self.preview_text.grid(row=0, column=0, sticky=tk.NSEW)
-        ys.grid(row=0, column=1, sticky=tk.NS)
-        xs.grid(row=1, column=0, sticky=tk.EW)
-        self.preview_frame.rowconfigure(0, weight=1)
-        self.preview_frame.columnconfigure(0, weight=1)
+        self.preview_check = QCheckBox("Show step-by-step preview")
+        self.preview_check.toggled.connect(lambda _on: self._toggle_preview())
+        body.addWidget(self.preview_check)
+        self.preview_text = text_box(read_only=True, wrap=False)
+        self.preview_text.hide()
+        body.addWidget(self.preview_text, 3)
         return frame
 
     # --- final deck events -------------------------------------------------------------
@@ -178,36 +199,27 @@ class SolverTab:
             raise ValueError(f"fix the shorthand first ({self.model.input_error})")
         return self.model.filled_cards()
 
-    def _on_text_modified(self, _event):
-        if not self.final_text.edit_modified():
-            return
-        self.final_text.edit_modified(False)
-        if self._syncing_text:
-            return
-        if self._text_job is not None:
-            self.frame.after_cancel(self._text_job)
-        self._text_job = self.frame.after(TEXT_DEBOUNCE_MS, self.apply_text)
+    def _on_text_modified(self):
+        if not self._syncing_text:
+            self._text_job.start()
 
     def apply_text(self):
         """Parse the shorthand box into the grid (also called after debounce)."""
-        if self._text_job is not None:
-            self.frame.after_cancel(self._text_job)
-        self._text_job = None
+        self._text_job.stop()
         self._text_is_source = True
         try:
-            self.model.set_final_from_text(self.final_text.get("1.0", tk.END))
+            self.model.set_final_from_text(self.final_text.toPlainText())
         finally:
             self._text_is_source = False
 
-    def _fill_slot_choices(self, index):
+    def _slot_choices(self, index):
         # Offer only cards not already placed in another slot; X, B, L can go anywhere.
         used = {c.key for i, c in enumerate(self.model.slots) if c is not None and i != index}
-        self.slot_boxes[index]["values"] = INDIFFERENT_LABELS + [
-            lbl for lbl, key in zip(ALL_CARD_LABELS, deck.FULL_DECK_KEYS) if key not in used
-        ]
+        return INDIFFERENT_LABELS + [
+            lbl for lbl, key in zip(ALL_CARD_LABELS, deck.FULL_DECK_KEYS) if key not in used]
 
     def _commit_slot(self, index):
-        text = self.slot_vars[index].get().strip()
+        text = self.slot_boxes[index].text().strip()
         if not text:
             self.model.set_slot(index, None)
             return
@@ -216,7 +228,7 @@ class SolverTab:
             if len(cards) != 1:
                 raise ValueError("one card per slot")
         except ValueError:
-            self.slot_boxes[index].configure(style="Bad.TCombobox")
+            set_tone(self.slot_boxes[index], "bad")
             return
         self.model.set_slot(index, cards[0])
         self.refresh()  # normalise the slot's text even when nothing changed
@@ -232,36 +244,37 @@ class SolverTab:
         elif m.input_error is None and m.slots != self._text_slots:
             self._text_slots = list(m.slots)
             self._syncing_text = True
-            self.final_text.delete("1.0", tk.END)
-            self.final_text.insert("1.0", m.final_text())
-            self.final_text.edit_modified(False)
+            self.final_text.setPlainText(m.final_text())
             self._syncing_text = False
-        self.text_error.config(text=f"⚠ {m.input_error}" if m.input_error else "")
+        self.text_error.setText(f"⚠ {m.input_error}" if m.input_error else "")
 
         dups = m.duplicate_slots()
-        focus = self.frame.focus_get()
+        focus = QApplication.focusWidget()
         for i, card in enumerate(m.slots):
             box = self.slot_boxes[i]
-            if focus is not box or card is not None:
-                self.slot_vars[i].set(card.pretty() if card else "")
-            box.configure(style="Dup.TCombobox" if i in dups else "TCombobox")
+            if focus not in (box, box.lineEdit()) or card is not None:
+                box.set_text(card.pretty() if card else "")
+            set_tone(box, "dup" if i in dups else None)
 
         report = m.deck_report()
         if report.ok:
             x = report.indifferent
             text = ("✓ Full 52-card deck, no duplicates." if not x else
                     f"✓ 52 cards, no duplicates; {x} indifferent ({report.counts_text()}).")
-            self.deck_status.config(text=text, bootstyle="success")
+            self.deck_status.setText(text)
+            set_tone(self.deck_status, "success")
         else:
-            self.deck_status.config(text="\n".join(report.messages()), bootstyle="danger")
+            self.deck_status.setText("\n".join(report.messages()))
+            set_tone(self.deck_status, "danger")
 
         self.sequence.refresh()
 
         res = m.result
-        text, style = BADGES[res.status]
-        self.badge.config(text=text, bootstyle=f"@{style}")
-        self.result_msg.config(text=" ".join(res.messages))
-        self._set_text(self.start_text, self._start_numbered() if res.has_answer else "")
+        text, tone = BADGES[res.status]
+        self.badge.setText(text)
+        set_tone(self.badge, tone)
+        self.result_msg.setText(" ".join(res.messages))
+        set_text(self.start_text, self._start_numbered() if res.has_answer else "")
         self._render_preview()
         self.viewers.refresh()
 
@@ -270,30 +283,20 @@ class SolverTab:
         return res.states if res.has_answer else None
 
     def _toggle_preview(self):
-        if self.preview_var.get():
-            self.preview_frame.pack(fill=tk.BOTH, expand=True)
-        else:
-            self.preview_frame.pack_forget()
+        self.preview_text.setVisible(self.preview_check.isChecked())
         self._render_preview()
 
     def _render_preview(self):
         res = self.model.result
-        if self.preview_var.get() and res.has_answer:
-            self._set_text(self.preview_text, format_preview(res.states, self.model.steps))
+        if self.preview_check.isChecked() and res.has_answer:
+            set_text(self.preview_text, format_preview(res.states, self.model.steps))
         else:
-            self._set_text(self.preview_text, "")
-
-    @staticmethod
-    def _set_text(widget, text):
-        widget.config(state=tk.NORMAL)
-        widget.delete("1.0", tk.END)
-        widget.insert("1.0", text)
-        widget.config(state=tk.DISABLED)
+            set_text(self.preview_text, "")
 
     # --- card image popups ------------------------------------------------------------------
 
     def view_final_cards(self):
-        if self._text_job is not None:  # show what was just typed, not the pre-debounce slots
+        if self._text_job.pending:  # show what was just typed, not the pre-debounce slots
             self.apply_text()
         self.viewers.open("final", "Final deck (top first)", lambda: self.model.slots)
 
@@ -321,24 +324,16 @@ class SolverTab:
         res = self.model.result
         return deck.format_numbered(res.start) if res.has_answer else ""
 
-    def _copy(self, text):
-        if not text:
-            return
-        self.frame.clipboard_clear()
-        self.frame.clipboard_append(text)
-
     def export_start(self):
-        window = self.frame.winfo_toplevel()
+        window = self.frame.window()
         res = self.model.result
         if not (res.has_answer and res.verified):
-            messagebox.showinfo("Export", "There is no verified starting order to export yet.",
-                                parent=window)
+            dialogs.info(window, "Export", "There is no verified starting order to export yet.")
             return
         notes = self._ask_export_notes()
         if notes is None:
             return
-        path = filedialog.asksaveasfilename(parent=window, defaultextension=".txt",
-                                            filetypes=[("Text", "*.txt"), ("All files", "*")])
+        path = dialogs.save_path(window, "Export", "Text (*.txt);;All files (*)", ".txt")
         if not path:
             return
         steps = format_instructions(self.model.steps, res.states) or "(none)"
@@ -357,37 +352,25 @@ class SolverTab:
 
     def _ask_export_notes(self):
         """Ask for optional notes to end the export with; None if the user cancels."""
-        window = self.frame.winfo_toplevel()
-        dialog = tb.Toplevel(window)
-        dialog.title("Export notes")
-        dialog.transient(window)
-        dialog.resizable(False, False)
-        tb.Label(dialog, text="Notes (optional) — added to the end of the file:").pack(
-            anchor=tk.W, padx=10, pady=(10, 4))
-        box = tk.Text(dialog, width=50, height=6, wrap=tk.WORD)
-        box.pack(padx=10)
-        result = {"notes": None}
-
-        def ok(_event=None):
-            result["notes"] = box.get("1.0", tk.END).strip()
-            dialog.destroy()
-
-        btns = tb.Frame(dialog)
-        btns.pack(fill=tk.X, padx=10, pady=10)
-        tb.Button(btns, text="Cancel", bootstyle="secondary",
-                  command=dialog.destroy).pack(side=tk.RIGHT)
-        tb.Button(btns, text="Choose file…", command=ok).pack(side=tk.RIGHT, padx=(0, 6))
-        dialog.bind("<Escape>", lambda _e: dialog.destroy())
-        dialog.bind("<Control-Return>", ok)
-        box.focus_set()
-        dialog.grab_set()
-        window.wait_window(dialog)
-        return result["notes"]
+        dialog = QDialog(self.frame.window())
+        dialog.setWindowTitle("Export notes")
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(QLabel("Notes (optional) — added to the end of the file:"))
+        box = QPlainTextEdit()
+        box.setMinimumSize(420, 120)
+        layout.addWidget(box)
+        ok = button("Choose file…", dialog.accept, kind="primary")
+        ok.setDefault(True)
+        layout.addWidget(row(None, ok, button("Cancel", dialog.reject)))
+        box.setFocus()
+        accepted = dialog.exec() == QDialog.Accepted
+        notes = box.toPlainText().strip()
+        dialog.deleteLater()
+        return notes if accepted else None
 
     def save(self):
-        window = self.frame.winfo_toplevel()
-        path = filedialog.asksaveasfilename(parent=window, defaultextension=".json",
-                                            filetypes=[("Shuffle setup", "*.json")])
+        window = self.frame.window()
+        path = dialogs.save_path(window, "Save setup", "Shuffle setup (*.json)", ".json")
         if path:
             write_file(window, "Save setup", path, lambda: self.model.save(path))
         return path or None
