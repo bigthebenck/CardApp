@@ -324,7 +324,7 @@ class XToYModel:
     """Two deck orders and the shuffles found to get from the first to the second.
 
     Finding a path takes seconds (minutes at depth 7), so it only runs on
-    ``solve()``, or ``search()`` on a worker thread; any edit to either order
+    ``solve()``, or ``search()`` in a worker process; any edit to either order
     clears the old answer. Either order may hold indifferent (X) cards: an X
     in the ending order takes any card, and an X in the starting order is
     filled in with whatever card the ending order needs where it lands. B and

@@ -1,13 +1,11 @@
 """The "X to Y" tab: enter a starting and an ending order, get the shuffles between them.
 
 All state lives in ``XToYModel``; this module only draws it and forwards user
-edits. It contains no shuffle math. The search runs on a worker thread so the
-window stays usable (and the search can be cancelled); the worker only sees
-copies of the cards and never touches Qt.
+edits. It contains no shuffle math. The search runs in a worker process
+(``search_process``) so the window stays smooth (and the search can be
+cancelled); the worker only sees copies of the cards and never touches Qt.
 """
 
-import gc
-import threading
 import time
 
 from PySide6.QtCore import Qt, QTimer
@@ -15,8 +13,9 @@ from PySide6.QtWidgets import QCheckBox, QHBoxLayout, QLabel, QProgressBar, QSli
 
 from .. import deck, path_finder
 from .card_viewer import CardViewers
+from . import search_process
 from .model import (PathOutcome, XToYModel, cancelled_outcome, format_instructions,
-                    format_preview, search_outcome)
+                    format_preview)
 from .open_in import OpenInTabButton
 from .presets import PresetBar, PresetStore
 from .widgets import (Debounce, Panel, button, column, copy, label, row, set_text, set_tone,
@@ -45,35 +44,50 @@ DEPTH_NOTES = {
 
 
 class _SearchJob:
-    """One search on a worker thread; the Qt side polls ``done`` and ``progress``."""
+    """One search in a worker process; the Qt side calls ``update`` and reads the rest."""
 
     def __init__(self, cards, depth):
         self.cards = cards  # copies, so later edits can't reach the worker
         self.depth = depth
-        self.cancel = threading.Event()
-        self.done = threading.Event()
         self.progress = (None, "Starting…")
         self.best = None  # "searching" outcome for the best route so far, if any
         self.outcome = None  # stays None when cancelled
         self.error = None
-        threading.Thread(target=self._run, daemon=True).start()
+        self.done = False
+        self.worker = search_process.take()
+        self.cancel = self.worker.cancel  # set once the search is stopped
+        self.worker.run(cards["start"], cards["end"], depth)
 
-    def _run(self):
-        try:
-            self.outcome = search_outcome(self.cards["start"], self.cards["end"], self.depth,
-                                          self.cancel.is_set, self._report, self._improved)
-        except path_finder.SearchCancelled:
-            pass
-        except Exception as exc:  # shown in the window instead of dying silently
-            self.error = exc
-        finally:
-            self.done.set()
+    def update(self):
+        """Take in what the worker sent; sets ``done`` once it has finished."""
+        if self.done:
+            return
+        alive = self.worker.alive()  # before reading, so nothing sent at the end is missed
+        for kind, value in self.worker.messages():
+            if kind == "progress":
+                self.progress = value
+            elif kind == "best":
+                self.best = value
+            else:
+                self.outcome = value if kind == "done" else None
+                self.error = value if kind == "error" else None
+                self._finish()
+                return
+        if not alive:
+            self.error = "the search process stopped unexpectedly"
+            self._finish()
 
-    def _report(self, fraction, text):
-        self.progress = (fraction, text)  # a single assignment, read by the Qt thread
+    def stop(self):
+        """Stop the search now, keeping the best route it had sent."""
+        if not self.done:
+            self.update()
+        if not self.done:
+            self._finish()
 
-    def _improved(self, outcome):
-        self.best = outcome  # likewise
+    def _finish(self):
+        self.done = True
+        self.worker.stop()
+        search_process.warm_up()  # ready for the next search
 
 
 class XToYTab:
@@ -112,6 +126,7 @@ class XToYTab:
 
         self.model.subscribe(lambda _m: self.refresh())
         self.refresh()
+        search_process.warm_up()  # so the first search starts at once
 
     # --- setup ----------------------------------------------------------------------
 
@@ -227,7 +242,7 @@ class XToYTab:
         return self._job is not None
 
     def solve(self):
-        """Start a search on a worker thread (the result arrives via ``_poll``)."""
+        """Start a search in a worker process (the result arrives via ``_poll``)."""
         if self._job is not None:
             return
         self.apply_text()  # don't wait for the debounce if the user typed and clicked
@@ -236,9 +251,6 @@ class XToYTab:
             self.model.set_outcome(PathOutcome("waiting", problems))
             return
         cards = {side: list(self.model.cards[side]) for side in self.model.SIDES}
-        # Free unreachable Qt objects (closed popups, ...) here on the GUI thread;
-        # otherwise the worker's garbage collections could delete them on its thread.
-        gc.collect()
         self._job = _SearchJob(cards, self.model.depth)
         self._phase = None
         self.find_button.setEnabled(False)
@@ -248,13 +260,14 @@ class XToYTab:
 
     def cancel_search(self):
         if self._job is not None:
-            self._job.cancel.set()
-            self.progress_label.setText("Cancelling…")
+            self._job.stop()
+            self._poll()
 
     def close(self):
         """Stop the search and pending edits before the tab's widgets go away."""
         if self._job is not None:
-            self._job.cancel.set()
+            self._job.stop()
+            self._job = None
         self._poll_timer.stop()
         for job in self._jobs.values():
             job.stop()
@@ -265,11 +278,12 @@ class XToYTab:
         job = self._job
         if job is None:
             return
-        if not job.done.is_set():
+        job.update()
+        if not job.done:
             self._show_progress(*job.progress)
             best = job.best
             if (best is not None and best is not self.model.outcome
-                    and job.cards == self.model.cards and not job.cancel.is_set()):
+                    and job.cards == self.model.cards):
                 self.model.set_outcome(best)  # show the best route so far
             self._poll_timer.start(POLL_MS)
             return

@@ -21,7 +21,7 @@ from pathlib import Path
 from string import Template
 
 from PySide6.QtCore import QPointF, Qt
-from PySide6.QtGui import QColor, QPainter, QPalette, QRadialGradient
+from PySide6.QtGui import QColor, QPainter, QPalette, QPixmap, QRadialGradient
 from PySide6.QtWidgets import QApplication, QMainWindow
 
 from .classic_themes import CLASSIC_THEMES
@@ -550,16 +550,22 @@ class GlassWindow(QMainWindow):
     and Windows fills in the blurred desktop behind it ("acrylic").
     """
 
-    def __init__(self):
+    def __init__(self, translucent=True):
+        """``translucent``: whether see-through can be turned on in this window's life.
+
+        A translucent window is a layered one on Windows, and every repaint of a
+        layered window goes through the CPU, so it is only made translucent when it
+        starts see-through. That has to be decided before it is first shown.
+        """
         super().__init__()
         self._see_through = False
-        if see_through_supported():
-            # Must be set before the window is first shown; with see-through off the
-            # backdrop is painted fully opaque, so it then looks like any window.
+        self._backdrop = None  # (key, QPixmap): the painted backdrop, reused until key changes
+        self.translucent = translucent and see_through_supported()
+        if self.translucent:
             self.setAttribute(Qt.WA_TranslucentBackground)
 
     def set_see_through(self, on):
-        on = bool(on) and see_through_supported()
+        on = bool(on) and self.translucent
         self._see_through = on
         if see_through_supported():
             hwnd = int(self.winId())
@@ -574,9 +580,25 @@ class GlassWindow(QMainWindow):
     def see_through(self):
         return self._see_through
 
-    def paintEvent(self, _event):
+    def paintEvent(self, event):
+        # The backdrop only changes with the size and the theme, but every repaint of
+        # a glass panel repaints the part of it behind; so paint it once and copy.
+        ratio = self.devicePixelRatioF()
+        key = (self.size(), ratio, _current, self._see_through)
+        if self._backdrop is None or self._backdrop[0] != key:
+            pixmap = QPixmap(self.size() * ratio)
+            pixmap.setDevicePixelRatio(ratio)
+            pixmap.fill(Qt.transparent)
+            self._paint_backdrop(pixmap)
+            self._backdrop = (key, pixmap)
+        painter = QPainter(self)  # clipped to the part being repainted
+        painter.setCompositionMode(QPainter.CompositionMode_Source)  # keep its alpha
+        painter.drawPixmap(0, 0, self._backdrop[1])
+        painter.end()
+
+    def _paint_backdrop(self, device):
         p = _current
-        painter = QPainter(self)
+        painter = QPainter(device)
         painter.setRenderHint(QPainter.Antialiasing)
         w, h = self.width(), self.height()
         painter.setCompositionMode(QPainter.CompositionMode_Source)

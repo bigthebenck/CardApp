@@ -30,7 +30,7 @@ from PySide6.QtGui import QAction, QActionGroup, QIcon, QKeySequence, QShortcut
 from PySide6.QtWidgets import QApplication, QVBoxLayout, QWidget
 
 from .. import deck, updater
-from . import dialogs, theme
+from . import dialogs, search_process, theme
 from .model import TRACKER_FILE_TYPE
 from .open_in import TITLE as OPEN_IN_TITLE
 from .presets import PresetStore
@@ -64,13 +64,15 @@ class ShuffleSolverApp(theme.GlassWindow):
     def __init__(self, settings_path=None, check_updates=False, session_path=None):
         """``settings_path``: where the theme, presets and update choices are kept;
         ``session_path``: where the open tabs are kept between runs (None: nowhere)."""
-        super().__init__()
+        choice = theme.ThemeChoice.load(settings_path)
+        # Translucent only if it starts see-through: see GlassWindow.
+        super().__init__(translucent=choice.see_through and choice.style == theme.GLASS)
         self.setWindowTitle(APP_TITLE)
         self.setMinimumSize(1200, 700)
         self.resize(1380, 800)  # fits the largest kind of tab; tabs don't resize the window
         self._closed = False
         self.settings_path = settings_path  # None: don't load or save the theme choice
-        self.theme = theme.ThemeChoice.load(settings_path)
+        self.theme = choice
         self.theme.apply(self)
         app = QApplication.instance()
         if getattr(app, "themed_tips", None) is None:  # one per app, shared by its windows
@@ -365,6 +367,7 @@ class ShuffleSolverApp(theme.GlassWindow):
                 close = getattr(tab.content, "close", None)
                 if close is not None:
                     close()
+            search_process.shutdown()
         super().closeEvent(event)
 
     # --- theme ---------------------------------------------------------------------------------
@@ -411,6 +414,10 @@ class ShuffleSolverApp(theme.GlassWindow):
         if style_changed:
             self._fill_theme_menu()
         self._show_theme_choice()
+        if (t.see_through and t.style == theme.GLASS and not self.translucent
+                and theme.see_through_supported() and (see_through or style_changed)):
+            dialogs.info(self, "See-through window",
+                         "The window will be see-through the next time you start the app.")
         for tab in self.tabs.tabs:  # group tints and the like are drawn from the theme
             refresh = getattr(tab.content, "refresh", None)
             if refresh is not None:
