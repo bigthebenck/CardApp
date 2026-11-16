@@ -516,6 +516,20 @@ def test_groups_follow_inserts_removals_and_duplicates():
     assert m.groups == []
 
 
+def test_duplicating_a_whole_group_makes_a_new_group():
+    m = grouped_model()
+    g = m.add_group(1, 3, "Trick 1", "Red")
+    h = m.add_group(4, 5, "Trick 2", "Blue")
+    assert m.duplicate_steps(1, 3) == 4
+    assert len(m.steps) == 9 and m.steps[4:7] == m.steps[1:4]
+    assert (g.first, g.last) == (1, 3) and (h.first, h.last) == (7, 8)
+    copy = m.group_of(5)
+    assert (copy.title, copy.color, copy.first, copy.last) == ("Trick 1 (copy)", "Red", 4, 6)
+    assert m.groups == [g, copy, h]
+    m.duplicate_steps(2, 3)  # part of a group: the copies join it
+    assert (g.first, g.last) == (1, 5) and len(m.groups) == 3
+
+
 def test_groups_cannot_overlap_and_can_be_edited_or_removed():
     m = grouped_model()
     g = m.add_group(0, 2, "Trick 1", "Red")

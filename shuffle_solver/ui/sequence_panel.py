@@ -337,10 +337,21 @@ class SequencePanel:
             self.select_step(self.model.move_step(sel, delta))
 
     def _duplicate_step(self):
-        sel = self.selected_step()
-        if sel is not None:
-            self.model.duplicate_step(sel)
-            self.select_step(sel + 1)
+        """Copy the selected step, steps or group to just after the selection."""
+        span = self.selected_range()
+        if span is None:
+            return
+        first, last = span
+        at = self.model.duplicate_steps(first, last)
+        end = at + last - first
+        copy = next((g for g in (self.groups() if self.groups else ())
+                     if (g.first, g.last) == (at, end)), None)
+        if copy is not None:
+            self.select_rows([f"g{copy.id}"])
+        elif at == end:
+            self.select_step(at)
+        else:
+            self.select_range(at, end)
 
     def _delete_step(self):
         sel = self.selected_step()

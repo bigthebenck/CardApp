@@ -1161,6 +1161,33 @@ def test_tracker_groups_steps_by_range(app):
     assert tab.model.groups == [] and t.children_of() == tuple(f"s{i}" for i in range(7))
 
 
+def test_tracker_duplicates_a_group(app):
+    tab = app.new_tab(TRACKER)
+    seq = tab.sequence
+    tab.load_preset()
+    for x in range(1, 5):
+        seq.new_x.setValue(x)
+        seq.add_step(ops.CUT)
+    seq.select_range(1, 2)
+    dialog = tab.open_group_dialog()
+    dialog.title_edit.setText("Trick 1")
+    dialog.color_box.setCurrentText("Red")
+    dialog.ok()
+    t = seq.step_list
+    seq.select_rows(["g1"])
+    seq._duplicate_step()
+    assert t.children_of() == ("s0", "g1", "g2", "s5")
+    assert t.children_of("g2") == ("s3", "s4")
+    copy = tab.model.group(2)
+    assert (copy.title, copy.color) == ("Trick 1 (copy)", "Red")
+    assert tab.model.steps[3:5] == tab.model.steps[1:3]
+    assert seq.selected_group() == 2
+    seq.select_range(0, 1)  # plain steps across the group's edge: just the steps
+    seq._duplicate_step()
+    assert len(tab.model.steps) == 8 and len(tab.model.groups) == 2
+    assert seq.selected_range() == (2, 3)
+
+
 def test_open_puts_each_kind_of_file_in_its_tab(app, windows, tmp_path):
     tab = app.new_tab(TRACKER)
     tab.load_preset()

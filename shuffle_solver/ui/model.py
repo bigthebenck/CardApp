@@ -59,9 +59,16 @@ class StepList:
         self._changed()
 
     def duplicate_step(self, index):
-        self.steps.insert(index + 1, self.steps[index])
-        self._inserted(index + 1, copy_of=index)
+        self.duplicate_steps(index, index)
+
+    def duplicate_steps(self, first, last):
+        """Copy steps ``first``..``last`` to just after ``last``; returns where the copy starts."""
+        at = last + 1
+        for k, step in enumerate(self.steps[first:at]):
+            self.steps.insert(at + k, step)
+            self._inserted(at + k, copy_of=last)
         self._changed()
+        return at
 
     def move_step(self, index, delta):
         """Move a step up (delta -1) or down (+1). Returns its new index."""
@@ -648,6 +655,27 @@ class TrackerModel(StepList):
             elif index <= g.last:
                 g.last -= 1
         self.groups = [g for g in self.groups if g.first <= g.last]
+
+    def duplicate_steps(self, first, last):
+        """Copy steps ``first``..``last`` to just after ``last``; returns where the copy starts.
+
+        When the steps are exactly one group, the copy becomes a group of its own
+        (same colour, title marked "(copy)") instead of growing the original.
+        """
+        group = self.group_of(first)
+        if group is None or (group.first, group.last) != (first, last):
+            return super().duplicate_steps(first, last)
+        at = last + 1
+        n = last - first + 1
+        self.steps[at:at] = self.steps[first:at]
+        for k in range(n):
+            self._inserted(at + k)
+        copy = StepGroup(self._next_group_id, f"{group.title} (copy)", group.color,
+                         at, at + n - 1)
+        self._next_group_id += 1
+        self.groups = sorted(self.groups + [copy], key=lambda g: g.first)
+        self._changed()
+        return at
 
     def add_group(self, first, last, title, color):
         """Group steps ``first``..``last`` (inclusive) under a title and colour."""
