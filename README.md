@@ -117,8 +117,12 @@ python web/build.py --serve   # build, then serve on port 8000 (prints the LAN a
 ```
 
 With `--serve`, open the printed address on a phone on the same Wi-Fi. Offline
-use and *Add to Home Screen* need HTTPS, so for those, upload `build/web` to a
-static host such as GitHub Pages. The first visit downloads Pyodide and numpy
+use and *Add to Home Screen* need HTTPS. `.github/workflows/pages.yml` runs the
+tests and publishes `build/web` to GitHub Pages at
+<https://bigthebenck.github.io/CardApp/> whenever the web app or the solver
+code changes on the default branch. You can also run it by hand from the
+Actions tab. On the phone, open that address, then choose *Add to Home Screen*
+(Safari's Share menu, or Chrome's ⋮ menu). The first visit downloads Pyodide and numpy
 (about 10 MB). After that, the app starts offline in a couple of seconds.
 `web/webbridge.py` is the only web-specific Python. It turns the page's calls
 into `AppModel` edits and returns the state as JSON. The page runs Python in a
