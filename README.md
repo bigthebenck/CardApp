@@ -83,6 +83,47 @@ pyinstaller --noconfirm CardApp.spec          # -> dist/CardApp/CardApp.exe
 iscc /DAppVersion=1.1.0 installer/CardApp.iss # -> dist/CardApp-Setup-1.1.0.exe
 ```
 
+## On a phone
+
+`web/` is a phone version of the **Starting Order** and **Free Tracking**
+tabs. It's an installable web app that runs the same `shuffle_solver` code in
+the browser through [Pyodide](https://pyodide.org) (Python compiled to
+WebAssembly). Tap the title to switch tools. Each tool has three screens:
+
+- **Starting Order**
+  - **Final deck**: presets, shorthand with a key row for `` ` - , ( ) ``, and
+    a 4 × 13 grid where tapping a slot opens a card picker.
+  - **Shuffles**: add, edit, reorder, copy and delete steps, with the split
+    cards for each step.
+  - **Start order**: PASS/FAIL, copy and share, and a walk through the deck
+    after each step.
+- **Free Tracking**
+  - **Deck**: any number of cards, as shorthand.
+  - **Steps**: pick the pile, then add shuffles or card and packet steps (take
+    out, add, split, put, gather, name X cards, rearrange). Open a step to
+    edit, move, copy or delete it, or to group a run of steps under a title
+    and colour.
+  - **Table**: every pile after each step. *Use as final deck* sends a
+    one-pile table to Starting Order.
+
+On either result screen, tap a card to follow it through the steps.
+
+Setup and tracking project `.json` files open in both versions. Your work in
+each tool is kept on the phone between visits.
+
+```sh
+python web/build.py           # -> build/web
+python web/build.py --serve   # build, then serve on port 8000 (prints the LAN address)
+```
+
+With `--serve`, open the printed address on a phone on the same Wi-Fi. Offline
+use and *Add to Home Screen* need HTTPS, so for those, upload `build/web` to a
+static host such as GitHub Pages. The first visit downloads Pyodide and numpy
+(about 10 MB). After that, the app starts offline in a couple of seconds.
+`web/webbridge.py` is the only web-specific Python. It turns the page's calls
+into `AppModel` edits and returns the state as JSON. The page runs Python in a
+Web Worker, so the screen never freezes.
+
 ## Using it
 
 The first time, the window starts empty. Press **+ New tab** in the middle (or the small **+**

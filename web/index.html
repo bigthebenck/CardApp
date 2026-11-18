@@ -1,0 +1,317 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Shuffle Solver</title>
+<meta name="description" content="Work out the starting order of a deck from the order you want and the shuffles you will do.">
+<meta name="theme-color" content="#e8ecf5" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#11121b" media="(prefers-color-scheme: dark)">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Shuffles">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="stylesheet" href="app.css">
+<script>
+  // Apply the saved theme before first paint so there is no flash.
+  try {
+    const p = JSON.parse(localStorage.getItem("shuffle-solver/prefs") || "{}");
+    if (p.theme && p.theme !== "auto") document.documentElement.dataset.theme = p.theme;
+    if (p.accent) document.documentElement.dataset.accent = p.accent;
+  } catch (e) {}
+</script>
+</head>
+<body>
+<div class="backdrop" aria-hidden="true"><i></i><i></i><i></i></div>
+
+<header class="appbar">
+  <div class="appbar-title">
+    <button class="tool-btn" id="tool-btn" aria-label="Switch tool">
+      <h1 id="tool-title">Starting Order</h1>
+      <svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg>
+    </button>
+    <span class="badge" id="badge" hidden></span>
+  </div>
+  <button class="icon-btn" id="menu-btn" aria-label="Menu">
+    <svg viewBox="0 0 24 24"><circle cx="12" cy="5" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="12" cy="19" r="1.8"/></svg>
+  </button>
+</header>
+
+<main>
+  <!-- 1. Final deck -->
+  <section class="view" id="view-final" data-view="final">
+    <div class="panel">
+      <div class="panel-head">
+        <h2>Final deck</h2>
+        <span class="hint">the order you want, top first</span>
+      </div>
+      <div class="row">
+        <select id="preset" aria-label="Load a preset">
+          <option value="">Load a preset…</option>
+        </select>
+        <button class="btn" id="clear-final">Clear</button>
+      </div>
+      <label class="field-label" for="shorthand">Shorthand</label>
+      <textarea id="shorthand" rows="3" spellcheck="false" autocapitalize="characters"
+                autocomplete="off" autocorrect="off"
+                placeholder="A-KH, (A-8, 9-K)`C, K-AD, ACHSD"></textarea>
+      <div class="keybar" id="keybar" aria-label="Insert symbol">
+        <button data-ins="`" aria-label="Face up">`</button>
+        <button data-ins="-">-</button>
+        <button data-ins=", ">,</button>
+        <button data-ins="(">(</button>
+        <button data-ins=")">)</button>
+        <button data-ins="10">10</button>
+        <button data-ins="X">X</button>
+        <button data-ins="⌫" aria-label="Backspace">⌫</button>
+      </div>
+      <p class="error" id="text-error" hidden></p>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <h2>Cards</h2>
+        <span class="hint">tap a slot to pick its card</span>
+      </div>
+      <div class="deck-grid" id="final-grid"></div>
+      <p class="status" id="deck-status"></p>
+    </div>
+  </section>
+
+  <!-- 2. Shuffles -->
+  <section class="view" id="view-steps" data-view="steps" hidden>
+    <div class="panel">
+      <div class="panel-head">
+        <h2>Add a shuffle</h2>
+        <span class="hint" id="insert-hint">adds to the end</span>
+      </div>
+      <div class="add-grid">
+        <button class="btn" data-add="out_faro">Out-Faro</button>
+        <button class="btn" data-add="in_faro">In-Faro</button>
+        <button class="btn" data-add="overhand_run">Overhand Run</button>
+        <button class="btn" data-add="cut">Cut</button>
+        <button class="btn" data-add="partial">Partial Faro</button>
+        <button class="btn" data-add="packet_run">Packet Run</button>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <h2>Sequence</h2>
+        <span class="hint">first → last</span>
+        <button class="btn btn-quiet" id="clear-steps">Clear all</button>
+      </div>
+      <ol class="steps" id="steps"></ol>
+      <p class="empty" id="steps-empty">No shuffles yet. Add one above.</p>
+      <p class="error" id="steps-error" hidden></p>
+    </div>
+
+    <details class="panel help">
+      <summary>How the shuffles work</summary>
+      <p><b>Overhand run</b>: run X cards singly off the top (1–52; 52 reverses the deck).</p>
+      <p><b>Packet run</b>: pick up the top X cards (2–52), run Y of them one at a time onto the
+        deck and drop the rest on top. Y “all” reverses the top X.</p>
+      <p><b>Cut</b>: move the top X cards (1–51) to the bottom.</p>
+      <p><b>Partial faro</b>: cut off X cards (up to 26) from the top or bottom and weave them
+        into the top or bottom of the rest. <i>Out</i> keeps the packet’s outer card on the
+        outside; <i>in</i> tucks it one card inside.</p>
+      <p><b>Split A|B</b>: split so A is the card you see on the bottom of the upper packet and
+        B is the top card of the rest.</p>
+    </details>
+  </section>
+
+  <!-- 3. Result -->
+  <section class="view" id="view-result" data-view="result" hidden>
+    <div class="panel">
+      <div class="result-head">
+        <span class="badge big" id="result-badge"></span>
+        <p id="result-msg"></p>
+      </div>
+      <div class="result-actions">
+        <button class="btn" id="copy-short">Copy shorthand</button>
+        <button class="btn" id="copy-list">Copy list</button>
+        <button class="btn btn-primary" id="share">Share the setup…</button>
+      </div>
+    </div>
+
+    <div class="panel" id="walk-panel">
+      <div class="panel-head">
+        <h2 id="walk-title">Starting order</h2>
+        <span class="hint" id="walk-hint">set up the deck like this, top first</span>
+      </div>
+      <div class="chips" id="walk-chips" role="tablist" aria-label="Deck after each step"></div>
+      <p class="walk-step" id="walk-step" hidden></p>
+      <div class="deck-grid readonly" id="walk-grid"></div>
+      <p class="hint center">Tap a card to follow it through the steps.</p>
+    </div>
+  </section>
+
+  <!-- Free Tracking: deck -->
+  <section class="view" id="view-tdeck" data-view="tdeck" hidden>
+    <div class="panel">
+      <div class="panel-head">
+        <h2>Deck to track</h2>
+        <span class="hint">top first, any number of cards</span>
+      </div>
+      <div class="row">
+        <select id="t-preset" aria-label="Load a preset">
+          <option value="">Load a preset…</option>
+        </select>
+        <button class="btn" id="t-clear">Clear</button>
+      </div>
+      <label class="field-label" for="t-shorthand">Shorthand</label>
+      <textarea id="t-shorthand" rows="3" spellcheck="false" autocapitalize="characters"
+                autocomplete="off" autocorrect="off"
+                placeholder="A-KH, A-KC, K-AD, K-AS"></textarea>
+      <div class="keybar" id="t-keybar" aria-label="Insert symbol">
+        <button data-ins="`" aria-label="Face up">`</button>
+        <button data-ins="-">-</button>
+        <button data-ins=", ">,</button>
+        <button data-ins="(">(</button>
+        <button data-ins=")">)</button>
+        <button data-ins="10">10</button>
+        <button data-ins="X">X</button>
+        <button data-ins="⌫" aria-label="Backspace">⌫</button>
+      </div>
+      <p class="hint">X = any card, X12 = twelve of them, B = any high card, L = any low card.</p>
+      <p class="error" id="t-text-error" hidden></p>
+      <p class="status" id="t-deck-status"></p>
+    </div>
+    <div class="panel" id="t-deck-panel">
+      <div class="panel-head">
+        <h2>Cards</h2>
+        <span class="hint" id="t-deck-count"></span>
+      </div>
+      <div class="deck-grid readonly" id="t-deck-grid"></div>
+    </div>
+  </section>
+
+  <!-- Free Tracking: steps -->
+  <section class="view" id="view-tsteps" data-view="tsteps" hidden>
+    <div class="panel">
+      <div class="panel-head">
+        <h2>Add a step</h2>
+        <span class="hint" id="t-insert-hint">adds to the end</span>
+      </div>
+      <div class="pile-pick" id="t-pile-pick">
+        <span class="field-label">Pile to shuffle, split or add to</span>
+        <div class="seg wrap" id="t-pile-seg"></div>
+      </div>
+      <h3 class="sub">Shuffles</h3>
+      <div class="add-grid">
+        <button class="btn" data-tadd="out_faro">Out-Faro</button>
+        <button class="btn" data-tadd="in_faro">In-Faro</button>
+        <button class="btn" data-tadd="overhand_run">Overhand Run</button>
+        <button class="btn" data-tadd="cut">Cut</button>
+        <button class="btn" data-tadd="partial">Partial Faro</button>
+        <button class="btn" data-tadd="packet_run">Packet Run</button>
+      </div>
+      <h3 class="sub">Cards &amp; packets</h3>
+      <div class="add-grid">
+        <button class="btn" data-top="take_out">Take out</button>
+        <button class="btn" data-top="add_cards">Add cards</button>
+        <button class="btn" data-top="split">Split</button>
+        <button class="btn" data-top="place">Put pile</button>
+        <button class="btn" data-top="gather">Gather</button>
+        <button class="btn" data-top="name_cards">Name X cards</button>
+        <button class="btn" data-top="rearrange">Rearrange…</button>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <h2>Steps</h2>
+        <span class="hint">first → last</span>
+        <button class="btn btn-quiet" id="t-clear-steps">Clear all</button>
+      </div>
+      <ol class="steps" id="t-steps"></ol>
+      <p class="empty" id="t-steps-empty">No steps yet. Add one above.</p>
+    </div>
+
+    <details class="panel help">
+      <summary>How the steps work</summary>
+      <p><b>Piles</b> are lettered: the deck starts as pile A, and each new pile takes the next
+        letter. Shuffles, splits and added cards go to the pile picked above.</p>
+      <p><b>Take out</b> named cards from wherever they are: as one new pile, a pile each, or
+        put away for good. <b>Add cards</b> puts new ones in (X5 adds five any cards).</p>
+      <p><b>Split</b> a pile into packets from the top, e.g. 1,1,1,1,12,12,12,12; cards left
+        over make one more packet. <b>Put pile</b> one pile on top of or under another.
+        <b>Gather</b> stacks piles into one, the first on top.</p>
+      <p><b>Name X cards</b> says which cards some indifferent cards are, in earlier steps too,
+        e.g. to know the card at a faro's split. <b>Rearrange</b> types the whole new order,
+        e.g. after a trick.</p>
+      <p><b>Groups</b>: open a step and tap Group… to title and colour a run of steps, such as
+        one trick of a routine. Tap a group's heading to edit, copy or ungroup it.</p>
+    </details>
+  </section>
+
+  <!-- Free Tracking: table -->
+  <section class="view" id="view-ttable" data-view="ttable" hidden>
+    <div class="panel">
+      <div class="panel-head">
+        <h2 id="t-table-title">Starting deck</h2>
+        <span class="hint" id="t-table-hint"></span>
+      </div>
+      <div class="chips" id="t-chips" role="tablist" aria-label="Table after each step"></div>
+      <p class="walk-step" id="t-next" hidden></p>
+      <p class="error" id="t-problem" hidden></p>
+      <div id="t-piles"></div>
+      <div class="row wrap" id="t-table-actions">
+        <button class="btn" id="t-copy">Copy shorthand</button>
+        <button class="btn" id="t-to-solver">Use as final deck</button>
+      </div>
+      <p class="hint center">Tap a card to follow it through the steps.</p>
+    </div>
+  </section>
+</main>
+
+<nav class="tabbar" aria-label="Sections">
+  <button data-go="final" data-tool="solver" class="active">
+    <svg viewBox="0 0 24 24"><rect x="4" y="3" width="12" height="16" rx="2"/><path d="M8 21h10a2 2 0 0 0 2-2V7"/></svg>
+    <span>Final deck</span>
+  </button>
+  <button data-go="steps" data-tool="solver">
+    <svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10"/></svg>
+    <span>Shuffles <b class="count" id="step-count" hidden></b></span>
+  </button>
+  <button data-go="result" data-tool="solver">
+    <svg viewBox="0 0 24 24"><path d="M5 12l4 4L19 6"/></svg>
+    <span>Start order</span>
+  </button>
+  <button data-go="tdeck" data-tool="tracker" hidden>
+    <svg viewBox="0 0 24 24"><rect x="4" y="3" width="12" height="16" rx="2"/><path d="M8 21h10a2 2 0 0 0 2-2V7"/></svg>
+    <span>Deck</span>
+  </button>
+  <button data-go="tsteps" data-tool="tracker" hidden>
+    <svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10"/></svg>
+    <span>Steps <b class="count" id="t-step-count" hidden></b></span>
+  </button>
+  <button data-go="ttable" data-tool="tracker" hidden>
+    <svg viewBox="0 0 24 24"><rect x="3" y="5" width="7" height="10" rx="1.5"/><rect x="14" y="5" width="7" height="10" rx="1.5"/><path d="M3 19h18"/></svg>
+    <span>Table</span>
+  </button>
+</nav>
+
+<div class="scrim" id="scrim" hidden></div>
+<div class="sheet" id="sheet" role="dialog" aria-modal="true" hidden>
+  <div class="grabber"></div>
+  <div id="sheet-body"></div>
+</div>
+
+<div class="loading" id="loading">
+  <div class="spinner"></div>
+  <p id="loading-text">Loading…</p>
+  <p class="hint">The first start downloads the solver (about 10 MB); after that it works offline.</p>
+</div>
+
+<div class="toast" id="toast" role="status" hidden></div>
+<input type="file" id="file-input" accept=".json,application/json" hidden>
+
+<script src="app.js"></script>
+<script src="tracker.js"></script>
+<script>start();</script>
+</body>
+</html>
